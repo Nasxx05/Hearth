@@ -140,7 +140,7 @@ export default function HabitCard({ habit, selectedDate, onPress }: Props) {
 
       {/* Sparkline */}
       <div className="mt-1.5">
-        <Sparkline data={sparkData} width={260} height={20} color={glyphColor} filled />
+        <Sparkline data={sparkData} width="100%" height={20} color={glyphColor} filled />
       </div>
     </div>
   );

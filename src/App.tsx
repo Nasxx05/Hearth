@@ -1,4 +1,4 @@
-import { Component, type ErrorInfo, type ReactNode, lazy, Suspense, useState } from 'react';
+import { Component, type ErrorInfo, type ReactNode, lazy, Suspense } from 'react';
 import { HabitProvider, useHabits } from './context/HabitContext';
 import BottomNav from './components/BottomNav';
 import SidebarNav from './components/SidebarNav';
@@ -44,28 +44,6 @@ function LoadingScreen() {
   return (
     <div className="min-h-screen flex items-center justify-center" style={{ background: 'var(--color-bg)' }}>
       <div className="w-8 h-8 rounded-full border-2 border-t-transparent animate-spin" style={{ borderColor: 'var(--color-forest)', borderTopColor: 'transparent' }} />
-    </div>
-  );
-}
-
-function DesktopBanner() {
-  const [dismissed, setDismissed] = useState(
-    () => !!localStorage.getItem('hearth_desktop_dismissed')
-  );
-  if (dismissed || window.innerWidth < 1024) return null;
-  return (
-    <div
-      className="fixed top-0 left-0 right-0 z-50 flex items-center justify-between px-4 py-2 text-sm"
-      style={{ background: 'var(--color-forest)', color: 'white', fontFamily: 'var(--font-sans)' }}
-    >
-      <span>Hearth is optimised for mobile — best experienced on your phone.</span>
-      <button
-        onClick={() => { localStorage.setItem('hearth_desktop_dismissed', '1'); setDismissed(true); }}
-        className="ml-4 opacity-80 hover:opacity-100"
-        aria-label="Dismiss"
-      >
-        ×
-      </button>
     </div>
   );
 }
@@ -130,7 +108,6 @@ export default function App() {
   return (
     <ErrorBoundary>
       <HabitProvider>
-        <DesktopBanner />
         <AppContent />
       </HabitProvider>
     </ErrorBoundary>

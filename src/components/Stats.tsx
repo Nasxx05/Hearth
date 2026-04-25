@@ -68,7 +68,7 @@ export default function Stats() {
   const RANGES: Range[] = ['week', 'month', 'year', 'all'];
 
   return (
-    <div className="max-w-lg mx-auto px-4 pt-10 pb-6">
+    <div className="max-w-lg lg:max-w-2xl mx-auto px-4 pt-10 pb-6">
       <div className="mb-2">
         <div className="text-xs font-medium tracking-widest" style={{ color: 'var(--color-ink-muted)', fontFamily: 'var(--font-sans)' }}>STATS</div>
         <h1 className="font-display text-3xl font-medium" style={{ color: 'var(--color-ink)' }}>Your rhythm</h1>
@@ -93,7 +93,7 @@ export default function Stats() {
       </div>
 
       {/* KPI grid */}
-      <div className="grid grid-cols-2 gap-3 mb-4">
+      <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 mb-4">
         <div className="p-4 rounded-2xl" style={{ background: 'var(--color-card)' }}>
           <div className="text-xs font-semibold tracking-widest mb-2" style={{ color: 'var(--color-ink-muted)', fontFamily: 'var(--font-sans)' }}>COMPLETION</div>
           <div className="font-mono font-medium text-3xl" style={{ color: 'var(--color-ink)' }}>{avg30}%</div>

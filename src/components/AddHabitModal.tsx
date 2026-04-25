@@ -121,10 +121,8 @@ export default function AddHabitModal({ onClose }: Props) {
                 key={i.name}
                 onClick={() => setIcon(i.name)}
                 title={i.label}
-                className="flex items-center justify-center rounded-xl transition-all"
+                className="aspect-square flex items-center justify-center rounded-xl transition-all w-full"
                 style={{
-                  width: 36,
-                  height: 36,
                   background: icon === i.name ? 'var(--color-forest)' : 'var(--color-bg-soft)',
                 }}
               >

@@ -82,7 +82,7 @@ export default function Profile() {
   const joinDate = new Date(profile.joinDate).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
 
   return (
-    <div className="max-w-lg mx-auto px-4 pt-10 pb-6">
+    <div className="max-w-lg lg:max-w-2xl mx-auto px-4 pt-10 pb-6">
       {/* Header */}
       <div className="flex items-center justify-between mb-6">
         <div className="text-xs font-medium tracking-widest" style={{ color: 'var(--color-ink-muted)', fontFamily: 'var(--font-sans)' }}>PROFILE</div>
