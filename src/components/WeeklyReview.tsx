@@ -56,7 +56,7 @@ export default function WeeklyReview() {
   };
 
   return (
-    <div className="max-w-lg mx-auto px-4 pt-10 pb-6 animate-fade-in">
+    <div className="max-w-lg lg:max-w-2xl mx-auto px-4 pt-10 pb-6 animate-fade-in">
       {/* Top bar */}
       <div className="flex items-center justify-between mb-6">
         <button

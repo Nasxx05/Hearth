@@ -62,7 +62,7 @@ export default function Calendar() {
   });
 
   return (
-    <div className="max-w-lg mx-auto px-4 pt-10 pb-6">
+    <div className="max-w-lg lg:max-w-2xl mx-auto px-4 pt-10 pb-6">
       {/* Header */}
       <div className="flex items-center justify-between mb-4">
         <div>

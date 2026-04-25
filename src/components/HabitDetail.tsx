@@ -18,7 +18,7 @@ export default function HabitDetail() {
   const habit = selectedHabitId ? getHabit(selectedHabitId) : undefined;
   if (!habit) {
     return (
-      <div className="max-w-lg mx-auto px-4 pt-12">
+      <div className="max-w-lg lg:max-w-2xl mx-auto px-4 pt-12">
         <button onClick={() => navigate('home')} className="mb-4" style={{ color: 'var(--color-ink-muted)' }}>← Back</button>
         <p style={{ color: 'var(--color-ink-muted)' }}>Habit not found.</p>
       </div>
@@ -57,7 +57,7 @@ export default function HabitDetail() {
   };
 
   return (
-    <div className="max-w-lg mx-auto px-4 pt-10 pb-6 animate-fade-in">
+    <div className="max-w-lg lg:max-w-2xl mx-auto px-4 pt-10 pb-6 animate-fade-in">
       {/* Nav */}
       <div className="flex items-center justify-between mb-6">
         <button
@@ -158,7 +158,7 @@ export default function HabitDetail() {
         <div className="font-display text-xl font-medium mb-3" style={{ color: 'var(--color-ink)' }}>
           Avg {avgPerWeek} days/week
         </div>
-        <Sparkline data={eightWeeks} width={320} height={64} color={glyphColor} filled />
+        <Sparkline data={eightWeeks} width="100%" height={64} color={glyphColor} filled />
       </div>
 
       {/* Reflection */}
