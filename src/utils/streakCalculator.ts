@@ -1,73 +1,76 @@
-import { formatDate } from './dateHelpers';
+import { toISO, addDays, isScheduledForDate } from './dateHelpers';
+import type { PauseRange } from '../types/habit';
 
-export const calculateStreak = (
+function isInRange(iso: string, ranges: PauseRange[], vacationMode: { start: string; end: string } | null): boolean {
+  for (const r of ranges) {
+    if (iso >= r.start && iso <= r.end) return true;
+  }
+  if (vacationMode && iso >= vacationMode.start && iso <= vacationMode.end) return true;
+  return false;
+}
+
+export function calcCurrentStreak(
   completionDates: string[],
-  completedToday: boolean,
-  skipDates: string[] = []
-): number => {
-  if (!completedToday) return 0;
-
-  const dateSet = new Set(completionDates);
-  const skipSet = new Set(skipDates);
-  const today = new Date();
-  const todayStr = formatDate(today);
-  if (completedToday) dateSet.add(todayStr);
-
+  schedule: number[],
+  skipDates: string[],
+  pauseRanges: PauseRange[] = [],
+  vacationMode: { start: string; end: string } | null = null,
+): number {
+  const completedSet = new Set(completionDates);
+  const skippedSet = new Set(skipDates);
   let streak = 0;
-  const current = new Date(today);
+  let d = new Date();
 
   while (true) {
-    const dateStr = formatDate(current);
-    if (dateSet.has(dateStr)) {
+    const iso = toISO(d);
+    if (skippedSet.has(iso) || isInRange(iso, pauseRanges, vacationMode)) {
+      d = addDays(d, -1);
+      continue;
+    }
+    if (!isScheduledForDate(schedule, iso)) {
+      d = addDays(d, -1);
+      if (streak === 0 && d < addDays(new Date(), -365)) break;
+      continue;
+    }
+    if (completedSet.has(iso)) {
       streak++;
-      current.setDate(current.getDate() - 1);
-    } else if (skipSet.has(dateStr)) {
-      // Skip days don't break the streak but don't count towards it
-      current.setDate(current.getDate() - 1);
+      d = addDays(d, -1);
     } else {
+      if (iso === toISO(new Date())) {
+        d = addDays(d, -1);
+        continue;
+      }
       break;
     }
+    if (streak > 1000) break;
   }
-
   return streak;
-};
+}
 
-export const calculateLongestStreak = (completionDates: string[], skipDates: string[] = []): number => {
+export function calcLongestStreak(
+  completionDates: string[],
+  schedule: number[],
+  skipDates: string[],
+  pauseRanges: PauseRange[] = [],
+  vacationMode: { start: string; end: string } | null = null,
+): number {
   if (completionDates.length === 0) return 0;
-
-  const skipSet = new Set(skipDates);
   const sorted = [...completionDates].sort();
-  let longest = 1;
-  let current = 1;
+  const completedSet = new Set(sorted);
+  const skippedSet = new Set(skipDates);
+  let longest = 0;
+  let current = 0;
 
-  for (let i = 1; i < sorted.length; i++) {
-    const prev = new Date(sorted[i - 1]);
-    const curr = new Date(sorted[i]);
-
-    // Count gap days that are skipped
-    let gapDays = 0;
-    let allSkipped = true;
-    const check = new Date(prev);
-    check.setDate(check.getDate() + 1);
-    while (check < curr) {
-      if (!skipSet.has(formatDate(check))) {
-        allSkipped = false;
-        break;
-      }
-      gapDays++;
-      check.setDate(check.getDate() + 1);
-    }
-
-    const diffMs = curr.getTime() - prev.getTime();
-    const diffDays = Math.round(diffMs / (1000 * 60 * 60 * 24));
-
-    if (diffDays === 1 || (diffDays > 1 && allSkipped && gapDays > 0)) {
+  for (const iso of sorted) {
+    if (skippedSet.has(iso) || isInRange(iso, pauseRanges, vacationMode)) continue;
+    if (!isScheduledForDate(schedule, iso)) continue;
+    const prev = toISO(addDays(new Date(iso), -1));
+    if (completedSet.has(prev) || current === 0) {
       current++;
-      longest = Math.max(longest, current);
-    } else if (diffDays > 1) {
+    } else {
       current = 1;
     }
+    longest = Math.max(longest, current);
   }
-
   return longest;
-};
+}

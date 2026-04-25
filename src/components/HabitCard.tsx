@@ -1,112 +1,147 @@
-import { useState } from 'react';
-import confetti from 'canvas-confetti';
+import HabitIcon from './HabitIcon';
+import Sparkline from './Sparkline';
 import type { Habit } from '../types/habit';
+import { GLYPH_COLORS } from '../types/habit';
 import { useHabits } from '../context/HabitContext';
-import { getToday } from '../utils/dateHelpers';
-import EditHabitModal from './EditHabitModal';
+import { getLast14Days, todayISO } from '../utils/dateHelpers';
 
-interface HabitCardProps {
+interface Props {
   habit: Habit;
+  selectedDate?: string;
+  onPress?: () => void;
 }
 
-export default function HabitCard({ habit }: HabitCardProps) {
-  const { toggleHabit, selectHabit, toggleSkipDay } = useHabits();
-  const [isAnimating, setIsAnimating] = useState(false);
-  const [showEdit, setShowEdit] = useState(false);
+export default function HabitCard({ habit, selectedDate, onPress }: Props) {
+  const { toggleHabit, navigate, profile } = useHabits();
+  const displayDate = selectedDate ?? todayISO();
+  const isCompleted = habit.completionDates.includes(displayDate);
 
-  const todayStr = getToday();
-  const isSkippedToday = (habit.skipDates || []).includes(todayStr);
+  const last14 = getLast14Days();
+  const sparkData = last14.map(d => habit.completionDates.includes(d) ? 1 : 0);
+  const glyphColor = GLYPH_COLORS[habit.color];
 
-  const handleToggle = (e: React.MouseEvent) => {
+  const handleComplete = (e: React.MouseEvent) => {
     e.stopPropagation();
-    if (isSkippedToday) return; // can't complete a skipped day
-    if (!habit.isCompletedToday) {
-      setIsAnimating(true);
-      setTimeout(() => setIsAnimating(false), 400);
-      const newStreak = habit.currentStreak + 1;
-      if (newStreak === 7 || newStreak === 30 || newStreak === 100 || newStreak === 365) {
-        setTimeout(() => {
-          confetti({ particleCount: 100, spread: 70, origin: { y: 0.6 } });
-        }, 200);
-      }
-    }
-    toggleHabit(habit.id);
+    toggleHabit(habit.id, displayDate);
   };
 
-  const handleSkipToggle = (e: React.MouseEvent) => {
-    e.stopPropagation();
-    toggleSkipDay(habit.id, todayStr);
+  const handlePress = () => {
+    if (onPress) onPress();
+    else navigate('habit-detail', habit.id);
   };
 
-  const subtitle = isSkippedToday
-    ? 'Rest Day — streak protected'
-    : habit.isCompletedToday
-      ? `${habit.target || habit.category} · Done`
-      : `${habit.target || habit.category} · Not started`;
+  const hasQuantityTarget = habit.targetValue > 1;
+  const quantityLabel = hasQuantityTarget
+    ? `${habit.quantityToday}/${habit.targetValue} today`
+    : null;
+
+  const showFreezeBadge = profile.isPremium && habit.streakFreezes > 0;
 
   return (
-    <>
-      <div
-        onClick={() => selectHabit(habit.id)}
-        className={`relative bg-white rounded-2xl p-4 shadow-sm transition-all duration-300 cursor-pointer hover:shadow-md ${
-          isAnimating ? 'scale-[1.02]' : ''
-        } ${isSkippedToday ? 'opacity-60' : ''}`}
-      >
-        {/* Edit & Skip buttons */}
-        <div className="absolute top-3 right-3 flex items-center gap-1">
-          <button
-            onClick={handleSkipToggle}
-            className="w-7 h-7 flex items-center justify-center rounded-full text-xs text-muted hover:bg-mint hover:text-forest transition cursor-pointer opacity-40 hover:opacity-100"
-            aria-label={isSkippedToday ? 'Remove skip' : 'Skip today'}
-            title={isSkippedToday ? 'Remove rest day' : 'Mark as rest day'}
-          >
-            💤
-          </button>
-          <button
-            onClick={(e) => { e.stopPropagation(); setShowEdit(true); }}
-            className="w-7 h-7 flex items-center justify-center rounded-full text-xs text-muted hover:bg-mint hover:text-forest transition cursor-pointer opacity-40 hover:opacity-100"
-            aria-label="Edit habit"
-          >
-            ✏️
-          </button>
+    <div
+      className="rounded-2xl p-4 cursor-pointer transition-opacity active:opacity-80 animate-slide-up"
+      style={{ background: 'var(--color-card)' }}
+      onClick={handlePress}
+    >
+      <div className="flex items-center gap-3">
+        <HabitIcon icon={habit.icon} color={habit.color} size={28} filled={isCompleted} />
+
+        <div className="flex-1 min-w-0">
+          <div className="flex items-center gap-2">
+            <span className="font-semibold text-sm truncate" style={{ fontFamily: 'var(--font-sans)', color: 'var(--color-ink)' }}>
+              {habit.name}
+            </span>
+            {habit.currentStreak > 0 && (
+              <div className="flex items-center gap-0.5 shrink-0">
+                <svg width="10" height="10" viewBox="0 0 10 10" fill="none">
+                  <circle cx="5" cy="5" r="4" fill="var(--color-terracotta)" />
+                </svg>
+                <span className="text-xs font-mono font-medium" style={{ color: 'var(--color-terracotta)' }}>
+                  {habit.currentStreak}
+                </span>
+              </div>
+            )}
+            {showFreezeBadge && (
+              <div className="flex items-center gap-0.5 shrink-0">
+                <span className="text-xs" style={{ color: 'var(--color-sky, #6BA3C4)' }}>❄</span>
+                <span className="text-xs font-mono font-medium" style={{ color: 'var(--color-sky, #6BA3C4)' }}>
+                  {habit.streakFreezes}
+                </span>
+              </div>
+            )}
+          </div>
+          <div className="flex items-center gap-1.5 mt-0.5">
+            <span className="text-xs" style={{ color: 'var(--color-ink-muted)', fontFamily: 'var(--font-sans)' }}>
+              {habit.targetValue} {habit.targetUnit}
+            </span>
+            <span className="text-xs" style={{ color: 'var(--color-ink-faint)' }}>·</span>
+            <span className="text-xs" style={{ color: 'var(--color-ink-muted)', fontFamily: 'var(--font-sans)' }}>
+              {habit.category}
+            </span>
+            {habit.reminderTime && (
+              <>
+                <span className="text-xs" style={{ color: 'var(--color-ink-faint)' }}>·</span>
+                <span className="text-xs" style={{ color: 'var(--color-ink-muted)', fontFamily: 'var(--font-sans)' }}>
+                  {habit.reminderTime}
+                </span>
+              </>
+            )}
+          </div>
         </div>
 
-        <div className="flex items-center gap-3">
-          <div className="w-12 h-12 bg-mint rounded-xl flex items-center justify-center text-2xl shrink-0">
-            {habit.emoji}
-          </div>
+        {/* Complete button */}
+        <button
+          onClick={handleComplete}
+          className="w-10 h-10 rounded-full flex items-center justify-center transition-all shrink-0"
+          style={{
+            border: `2px solid ${isCompleted ? glyphColor : 'var(--color-bg-soft)'}`,
+            background: isCompleted ? glyphColor : 'transparent',
+          }}
+          aria-label={isCompleted ? 'Mark incomplete' : 'Mark complete'}
+        >
+          {isCompleted && (
+            <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
+              <path d="M2.5 7l3.5 3.5 5.5-6" stroke="white" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round" />
+            </svg>
+          )}
+          {!isCompleted && hasQuantityTarget && (
+            <span className="text-xs font-mono font-medium" style={{ color: 'var(--color-ink-faint)' }}>
+              +1
+            </span>
+          )}
+        </button>
+      </div>
 
-          <div className="flex-1 min-w-0">
-            <h3 className="text-sm font-bold text-dark truncate">{habit.name}</h3>
-            <p className="text-xs text-muted mt-0.5">{subtitle}</p>
-          </div>
-
-          <button
-            onClick={handleToggle}
-            disabled={isSkippedToday}
-            className={`w-10 h-10 rounded-full flex items-center justify-center shrink-0 transition-all duration-300 cursor-pointer ${
-              isSkippedToday
-                ? 'bg-peach-light text-peach cursor-not-allowed'
-                : habit.isCompletedToday
-                  ? 'bg-sage text-white shadow-sm'
-                  : 'border-2 border-sage-light text-sage hover:border-sage hover:bg-mint'
-            } ${isAnimating ? 'animate-bounce-once' : ''}`}
-            aria-label={habit.isCompletedToday ? 'Mark as incomplete' : 'Mark as complete'}
-          >
-            {isSkippedToday ? '💤' : habit.isCompletedToday ? '✓' : '+'}
-          </button>
+      {/* Trend bar */}
+      <div className="mt-3 flex items-center justify-between">
+        <div className="flex gap-0.5">
+          {sparkData.map((v, i) => (
+            <div
+              key={i}
+              className="rounded-full"
+              style={{
+                width: 6,
+                height: 6,
+                background: v ? glyphColor : 'var(--color-bg-soft)',
+              }}
+            />
+          ))}
         </div>
-
-        {/* Streak indicator */}
-        {habit.currentStreak > 0 && !isSkippedToday && (
-          <div className="mt-2 flex items-center gap-1">
-            <span className="text-xs">🔥</span>
-            <span className="text-xs font-semibold text-peach">{habit.currentStreak} day streak</span>
-          </div>
+        {quantityLabel ? (
+          <span className="text-xs font-mono" style={{ color: 'var(--color-ink-muted)' }}>
+            {quantityLabel}
+          </span>
+        ) : (
+          <span className="text-[10px]" style={{ color: 'var(--color-ink-faint)', fontFamily: 'var(--font-sans)' }}>
+            LAST 14D
+          </span>
         )}
       </div>
 
-      <EditHabitModal habit={habit} isOpen={showEdit} onClose={() => setShowEdit(false)} />
-    </>
+      {/* Sparkline */}
+      <div className="mt-1.5">
+        <Sparkline data={sparkData} width={260} height={20} color={glyphColor} filled />
+      </div>
+    </div>
   );
 }

@@ -1,256 +1,429 @@
 import { useState, useRef } from 'react';
 import { useHabits } from '../context/HabitContext';
 import type { ThemeMode } from '../types/habit';
+import { useSupabaseSync } from '../hooks/useSupabaseSync';
+import { signOut, supabase } from '../lib/supabase';
+import AuthModal from './AuthModal';
+import { exportData, importData } from '../utils/exportImport';
+
+const THEME_LABELS: Record<ThemeMode, string> = {
+  light: 'Warm / light',
+  dark: 'Dark',
+  system: 'System',
+};
 
 export default function Profile() {
-  const { habits, profile, updateProfile, milestones, setCurrentView, theme, setTheme, exportData, importData } = useHabits();
-  const [editingName, setEditingName] = useState(false);
-  const [editingTagline, setEditingTagline] = useState(false);
-  const [nameInput, setNameInput] = useState(profile.name);
-  const [taglineInput, setTaglineInput] = useState(profile.tagline);
-  const [importStatus, setImportStatus] = useState<'idle' | 'success' | 'error'>('idle');
+  const { profile, habits, achievements, reflections, themeMode, setThemeMode, updateProfile, navigate, setShowPremiumGate, importAll } = useHabits();
+  const [editing, setEditing] = useState(false);
+  const [name, setName] = useState(profile.name);
+  const [tagline, setTagline] = useState(profile.tagline);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const importInputRef = useRef<HTMLInputElement>(null);
+  const [showAuth, setShowAuth] = useState(false);
+  const [importMsg, setImportMsg] = useState('');
+  const { userEmail, lastSynced, syncing, syncUp } = useSupabaseSync();
 
-  const handleAvatarPick = (e: React.ChangeEvent<HTMLInputElement>) => {
+  const handleAvatarClick = () => fileInputRef.current?.click();
+
+  const handleAvatarChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
-    if (file.size > 2 * 1024 * 1024) return;
     const reader = new FileReader();
-    reader.onload = () => {
-      const img = new Image();
-      img.onload = () => {
-        const canvas = document.createElement('canvas');
-        const size = 200;
-        canvas.width = size;
-        canvas.height = size;
-        const ctx = canvas.getContext('2d')!;
-        const min = Math.min(img.width, img.height);
-        const sx = (img.width - min) / 2;
-        const sy = (img.height - min) / 2;
-        ctx.drawImage(img, sx, sy, min, min, 0, 0, size, size);
-        updateProfile({ avatar: canvas.toDataURL('image/jpeg', 0.8) });
-      };
-      img.src = reader.result as string;
+    reader.onload = ev => {
+      const base64 = ev.target?.result as string;
+      if (base64) updateProfile({ avatar: base64 });
     };
     reader.readAsDataURL(file);
-    e.target.value = '';
-  };
-
-  const totalCompletions = habits.reduce((sum, h) => sum + h.completionDates.length, 0);
-  const bestStreak = habits.reduce((max, h) => Math.max(max, h.longestStreak), 0);
-  // Calculate total scheduled days since each habit was created
-  const today = new Date();
-  const totalPossible = habits.reduce((sum, h) => {
-    const created = new Date(h.createdAt);
-    let possible = 0;
-    const d = new Date(created);
-    while (d <= today) {
-      if (h.schedule.includes(d.getDay())) possible++;
-      d.setDate(d.getDate() + 1);
-    }
-    return sum + possible;
-  }, 0);
-  const completionRate = totalPossible > 0 ? Math.round((totalCompletions / totalPossible) * 100) : 0;
-  const unlockedCount = milestones.filter((m) => m.unlocked).length;
-
-  const joinDate = new Date(profile.joinDate);
-  const joinStr = joinDate.toLocaleString('en-US', { month: 'short', year: 'numeric' });
-
-  const saveName = () => {
-    if (nameInput.trim()) updateProfile({ name: nameInput.trim() });
-    setEditingName(false);
-  };
-
-  const saveTagline = () => {
-    updateProfile({ tagline: taglineInput.trim() });
-    setEditingTagline(false);
-  };
-
-  const handleExport = () => {
-    const data = exportData();
-    const blob = new Blob([data], { type: 'application/json' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = `habit-tracker-backup-${new Date().toISOString().split('T')[0]}.json`;
-    a.click();
-    URL.revokeObjectURL(url);
   };
 
   const handleImport = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
     const reader = new FileReader();
-    reader.onload = () => {
-      const success = importData(reader.result as string);
-      setImportStatus(success ? 'success' : 'error');
-      setTimeout(() => setImportStatus('idle'), 3000);
+    reader.onload = ev => {
+      const text = ev.target?.result as string;
+      const payload = importData(text);
+      if (!payload) {
+        setImportMsg('Invalid file. Please use a Hearth export.');
+        return;
+      }
+      importAll(payload);
+      setImportMsg('Data imported successfully!');
+      setTimeout(() => setImportMsg(''), 3000);
     };
     reader.readAsText(file);
     e.target.value = '';
   };
 
-  const themeOptions: { value: ThemeMode; label: string; icon: string }[] = [
-    { value: 'light', label: 'Light', icon: '☀️' },
-    { value: 'dark', label: 'Dark', icon: '🌙' },
-    { value: 'system', label: 'Auto', icon: '💻' },
-  ];
+  const totalCompletions = habits.reduce((s, h) => s + h.completionDates.length, 0);
+  const longestStreak = habits.length > 0 ? Math.max(...habits.map(h => h.longestStreak)) : 0;
+  const perfectDays = (() => {
+    const allDates = new Set(habits.flatMap(h => h.completionDates));
+    let count = 0;
+    allDates.forEach(date => {
+      if (habits.length > 0 && habits.every(h => h.completionDates.includes(date))) count++;
+    });
+    return count;
+  })();
 
-  const menuItems = [
-    { icon: '✏️', label: 'Edit Profile', action: () => setEditingName(true) },
-    { icon: '📊', label: 'View Statistics', action: () => setCurrentView('stats') },
-    { icon: '📅', label: 'Calendar History', action: () => setCurrentView('calendar') },
-    { icon: '📋', label: 'Weekly Review', action: () => setCurrentView('weekly-review') },
-  ];
+  const unlockedCount = achievements.filter(a => a.unlocked).length;
+
+  const handleSave = () => {
+    updateProfile({ name: name.trim() || 'You', tagline: tagline.trim() });
+    setEditing(false);
+  };
+
+  const cycleTheme = () => {
+    const order: ThemeMode[] = ['light', 'dark', 'system'];
+    const next = order[(order.indexOf(themeMode) + 1) % order.length];
+    setThemeMode(next);
+  };
+
+  const joinDate = new Date(profile.joinDate).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
 
   return (
-    <div className="max-w-3xl mx-auto pb-24 animate-fade-in">
-      <div className="px-4 py-4">
-        <h1 className="text-2xl font-bold text-dark">Profile</h1>
+    <div className="max-w-lg mx-auto px-4 pt-10 pb-6">
+      {/* Header */}
+      <div className="flex items-center justify-between mb-6">
+        <div className="text-xs font-medium tracking-widest" style={{ color: 'var(--color-ink-muted)', fontFamily: 'var(--font-sans)' }}>PROFILE</div>
+        <button className="w-9 h-9 rounded-xl flex items-center justify-center" style={{ background: 'var(--color-card)' }}>
+          <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
+            <circle cx="8" cy="8" r="6" stroke="var(--color-ink-muted)" strokeWidth={1.5} />
+            <path d="M5.5 6.5c0-1.38 1.12-2.5 2.5-2.5s2.5 1.12 2.5 2.5c0 1-.6 1.88-1.5 2.28V10h-2v-1.22C6.1 8.38 5.5 7.5 5.5 6.5z" fill="var(--color-ink-muted)" />
+            <circle cx="8" cy="12" r="1" fill="var(--color-ink-muted)" />
+          </svg>
+        </button>
       </div>
 
-      {/* Profile Card */}
-      <section className="px-4 pt-2">
-        <div className="bg-white rounded-2xl p-6 shadow-sm text-center">
-          <div className="relative inline-block">
-            <input ref={fileInputRef} type="file" accept="image/*" onChange={handleAvatarPick} className="hidden" />
-            {profile.avatar ? (
-              <img src={profile.avatar} alt="Profile" className="w-20 h-20 rounded-full object-cover mx-auto" />
-            ) : (
-              <div className="w-20 h-20 rounded-full bg-mint flex items-center justify-center text-4xl mx-auto">👤</div>
-            )}
-            <button onClick={() => fileInputRef.current?.click()}
-              className="absolute -bottom-1 -right-1 w-7 h-7 bg-sage rounded-full flex items-center justify-center text-white text-xs shadow-md cursor-pointer hover:bg-forest transition">📷</button>
-          </div>
-          {editingName ? (
-            <div className="mt-4 flex items-center justify-center gap-2">
-              <input type="text" value={nameInput} onChange={(e) => setNameInput(e.target.value)}
-                onKeyDown={(e) => e.key === 'Enter' && saveName()}
-                className="px-3 py-2 border-2 border-sage-light rounded-xl text-center font-bold text-dark focus:border-forest focus:outline-none"
-                autoFocus maxLength={30} />
-              <button onClick={saveName} className="text-forest font-semibold text-sm cursor-pointer">Save</button>
-            </div>
+      {/* Avatar + bio */}
+      <div className="flex flex-col items-center text-center mb-6">
+        <button onClick={handleAvatarClick} className="relative mb-3 group">
+          {profile.avatar ? (
+            <img
+              src={profile.avatar}
+              alt="Avatar"
+              className="w-20 h-20 rounded-full object-cover"
+            />
           ) : (
-            <h2 className="text-xl font-bold text-dark mt-4 cursor-pointer hover:text-forest transition" onClick={() => setEditingName(true)}>
-              {profile.name}
-            </h2>
+            <div
+              className="w-20 h-20 rounded-full flex items-center justify-center text-2xl font-semibold"
+              style={{ background: 'var(--color-forest)', color: 'oklch(0.88 0.09 92)' }}
+            >
+              {profile.name.charAt(0).toUpperCase()}
+            </div>
           )}
-          {editingTagline ? (
-            <div className="mt-2 flex items-center justify-center gap-2">
-              <input type="text" value={taglineInput} onChange={(e) => setTaglineInput(e.target.value)}
-                onKeyDown={(e) => e.key === 'Enter' && saveTagline()}
-                placeholder="Your personal tagline..."
-                className="px-3 py-1.5 border-2 border-sage-light rounded-xl text-center text-sm text-dark focus:border-forest focus:outline-none"
-                autoFocus maxLength={60} />
-              <button onClick={saveTagline} className="text-forest font-semibold text-sm cursor-pointer">Save</button>
+          <div className="absolute inset-0 rounded-full bg-black/30 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center">
+            <svg width="18" height="18" viewBox="0 0 18 18" fill="none">
+              <path d="M9 2v14M2 9h14" stroke="white" strokeWidth={2} strokeLinecap="round" />
+            </svg>
+          </div>
+        </button>
+        <input
+          ref={fileInputRef}
+          type="file"
+          accept="image/*"
+          className="hidden"
+          onChange={handleAvatarChange}
+        />
+        {editing ? (
+          <div className="w-full max-w-xs space-y-2">
+            <input
+              value={name}
+              onChange={e => setName(e.target.value)}
+              className="w-full text-center font-display text-2xl bg-transparent outline-none border-b-2 pb-1"
+              style={{ borderColor: 'var(--color-forest)', color: 'var(--color-ink)' }}
+            />
+            <input
+              value={tagline}
+              onChange={e => setTagline(e.target.value)}
+              className="w-full text-center text-sm bg-transparent outline-none"
+              style={{ color: 'var(--color-ink-muted)', fontFamily: 'var(--font-sans)' }}
+            />
+            <button
+              onClick={handleSave}
+              className="w-full py-2 rounded-xl text-sm font-semibold mt-2"
+              style={{ background: 'var(--color-forest)', color: 'white', fontFamily: 'var(--font-sans)' }}
+            >
+              Save
+            </button>
+          </div>
+        ) : (
+          <>
+            <h1 className="font-display text-2xl font-medium mb-1" style={{ color: 'var(--color-ink)' }}>{profile.name}</h1>
+            <p className="text-sm mb-1" style={{ color: 'var(--color-ink-muted)', fontFamily: 'var(--font-sans)' }}>{profile.tagline}</p>
+            <p className="text-xs mb-3" style={{ color: 'var(--color-ink-faint)', fontFamily: 'var(--font-sans)' }}>Member since {joinDate}</p>
+            <button
+              onClick={() => setEditing(true)}
+              className="text-xs font-medium px-3 py-1 rounded-full"
+              style={{ background: 'var(--color-bg-soft)', color: 'var(--color-ink-muted)', fontFamily: 'var(--font-sans)' }}
+            >
+              Edit profile
+            </button>
+          </>
+        )}
+      </div>
+
+      {/* Lifetime stats */}
+      <div className="p-4 rounded-2xl mb-4" style={{ background: 'var(--color-forest)' }}>
+        <div className="text-xs font-semibold tracking-widest mb-3" style={{ color: 'oklch(0.88 0.09 92)', fontFamily: 'var(--font-sans)' }}>
+          LIFETIME
+        </div>
+        <div className="grid grid-cols-3 gap-2">
+          {[
+            { value: totalCompletions, label: 'Completions' },
+            { value: longestStreak, label: 'Longest streak' },
+            { value: perfectDays, label: 'Perfect days' },
+          ].map((s, i) => (
+            <div key={i} className="text-center">
+              <div className="font-mono font-medium text-2xl mb-0.5" style={{ color: i === 1 ? 'oklch(0.88 0.09 92)' : 'white' }}>{s.value}</div>
+              <div className="text-[10px]" style={{ color: 'white', opacity: 0.6, fontFamily: 'var(--font-sans)' }}>{s.label}</div>
             </div>
+          ))}
+        </div>
+      </div>
+
+      {/* Achievements */}
+      <div className="p-4 rounded-2xl mb-4" style={{ background: 'var(--color-card)' }}>
+        <div className="flex items-baseline justify-between mb-3">
+          <h2 className="font-display text-xl font-medium" style={{ color: 'var(--color-ink)' }}>Achievements</h2>
+          <span className="text-xs" style={{ color: 'var(--color-ink-muted)', fontFamily: 'var(--font-sans)' }}>{unlockedCount} unlocked</span>
+        </div>
+        <div className="grid grid-cols-4 gap-3">
+          {achievements.map(a => (
+            <div key={a.id} className="flex flex-col items-center gap-1.5">
+              <div
+                className="w-14 h-14 rounded-2xl flex items-center justify-center text-xl"
+                style={{
+                  background: 'var(--color-bg-soft)',
+                  opacity: a.unlocked ? 1 : 0.35,
+                }}
+              >
+                {a.icon}
+              </div>
+              <span className="text-[10px] text-center leading-tight" style={{ color: 'var(--color-ink-muted)', fontFamily: 'var(--font-sans)' }}>
+                {a.name}
+              </span>
+            </div>
+          ))}
+        </div>
+      </div>
+
+      {/* Settings */}
+      <div className="rounded-2xl overflow-hidden" style={{ background: 'var(--color-card)' }}>
+        <button
+          onClick={cycleTheme}
+          className="w-full flex items-center gap-3 px-4 py-4 transition-colors text-left"
+          style={{ borderBottom: '1px solid var(--color-bg-soft)' }}
+        >
+          <div className="w-8 h-8 rounded-xl flex items-center justify-center" style={{ background: 'var(--color-bg-soft)' }}>
+            <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
+              <circle cx="7" cy="7" r="2.5" stroke="var(--color-ink-muted)" strokeWidth={1.5} />
+              <path d="M7 1v1.5M7 11.5V13M1 7h1.5M11.5 7H13M2.64 2.64l1.06 1.06M10.3 10.3l1.06 1.06M11.36 2.64l-1.06 1.06M3.7 10.3L2.64 11.36" stroke="var(--color-ink-muted)" strokeWidth={1.25} strokeLinecap="round" />
+            </svg>
+          </div>
+          <span className="flex-1 text-sm font-medium" style={{ color: 'var(--color-ink)', fontFamily: 'var(--font-sans)' }}>Appearance</span>
+          <span className="text-sm" style={{ color: 'var(--color-ink-muted)', fontFamily: 'var(--font-sans)' }}>{THEME_LABELS[themeMode]}</span>
+          <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
+            <path d="M5 3l4 4-4 4" stroke="var(--color-ink-faint)" strokeWidth={1.5} strokeLinecap="round" strokeLinejoin="round" />
+          </svg>
+        </button>
+
+        <button
+          onClick={() => navigate('weekly-review')}
+          className="w-full flex items-center gap-3 px-4 py-4 transition-colors text-left"
+          style={{ borderBottom: '1px solid var(--color-bg-soft)' }}
+        >
+          <div className="w-8 h-8 rounded-xl flex items-center justify-center" style={{ background: 'var(--color-bg-soft)' }}>
+            <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
+              <rect x="1" y="3" width="12" height="9" rx="1.5" stroke="var(--color-ink-muted)" strokeWidth={1.5} />
+              <path d="M5 1v3M9 1v3M1 6h12" stroke="var(--color-ink-muted)" strokeWidth={1.25} strokeLinecap="round" />
+            </svg>
+          </div>
+          <span className="flex-1 text-sm font-medium" style={{ color: 'var(--color-ink)', fontFamily: 'var(--font-sans)' }}>Weekly review</span>
+          <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
+            <path d="M5 3l4 4-4 4" stroke="var(--color-ink-faint)" strokeWidth={1.5} strokeLinecap="round" strokeLinejoin="round" />
+          </svg>
+        </button>
+
+        <button
+          className="w-full flex items-center gap-3 px-4 py-4 transition-colors text-left"
+          onClick={async () => {
+            if ('Notification' in window && Notification.permission === 'default') {
+              await Notification.requestPermission();
+            }
+          }}
+        >
+          <div className="w-8 h-8 rounded-xl flex items-center justify-center" style={{ background: 'var(--color-bg-soft)' }}>
+            <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
+              <path d="M7 1C3.69 1 1 3.69 1 7s2.69 6 6 6 6-2.69 6-6-2.69-6-6-6z" stroke="var(--color-ink-muted)" strokeWidth={1.5} />
+              <path d="M5 5h.01M7 7h.01M9 9h.01" stroke="var(--color-ink-muted)" strokeWidth={1.75} strokeLinecap="round" />
+            </svg>
+          </div>
+          <span className="flex-1 text-sm font-medium" style={{ color: 'var(--color-ink)', fontFamily: 'var(--font-sans)' }}>Reminders</span>
+          <span className="text-sm" style={{ color: 'var(--color-ink-muted)', fontFamily: 'var(--font-sans)' }}>
+            {'Notification' in window ? (Notification.permission === 'granted' ? 'On' : 'Tap to enable') : 'Not supported'}
+          </span>
+          <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
+            <path d="M5 3l4 4-4 4" stroke="var(--color-ink-faint)" strokeWidth={1.5} strokeLinecap="round" strokeLinejoin="round" />
+          </svg>
+        </button>
+      </div>
+
+      {/* Cloud sync */}
+      {supabase && (
+        <div className="rounded-2xl overflow-hidden mt-4" style={{ background: 'var(--color-card)' }}>
+          <div className="px-4 py-4">
+            <div className="flex items-center justify-between mb-1">
+              <span className="text-sm font-medium" style={{ color: 'var(--color-ink)', fontFamily: 'var(--font-sans)' }}>Cloud sync</span>
+              {userEmail ? (
+                <button
+                  onClick={() => signOut()}
+                  className="text-xs font-medium px-3 py-1 rounded-full"
+                  style={{ background: 'var(--color-bg-soft)', color: 'var(--color-ink-muted)', fontFamily: 'var(--font-sans)' }}
+                >
+                  Sign out
+                </button>
+              ) : (
+                <button
+                  onClick={() => setShowAuth(true)}
+                  className="text-xs font-medium px-3 py-1 rounded-full"
+                  style={{ background: 'var(--color-forest)', color: 'white', fontFamily: 'var(--font-sans)' }}
+                >
+                  Sign in
+                </button>
+              )}
+            </div>
+            <p className="text-xs mb-3" style={{ color: 'var(--color-ink-muted)', fontFamily: 'var(--font-sans)' }}>
+              {userEmail ? `Signed in as ${userEmail}` : 'Not signed in — data stays local only'}
+            </p>
+            {userEmail && (
+              <button
+                onClick={() => syncUp(habits, profile, reflections)}
+                disabled={syncing}
+                className="w-full py-2 rounded-xl text-sm font-medium disabled:opacity-50"
+                style={{ background: 'var(--color-bg-soft)', color: 'var(--color-forest)', fontFamily: 'var(--font-sans)' }}
+              >
+                {syncing ? 'Syncing…' : 'Sync now'}
+              </button>
+            )}
+            {lastSynced && (
+              <p className="text-xs mt-2 text-center" style={{ color: 'var(--color-ink-faint)', fontFamily: 'var(--font-sans)' }}>
+                Last synced {lastSynced.toLocaleTimeString()}
+              </p>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* Premium section */}
+      <div className="rounded-2xl overflow-hidden mt-4" style={{ background: 'var(--color-card)' }}>
+        <div className="px-4 py-4">
+          <div className="flex items-center justify-between mb-1">
+            <span className="text-sm font-medium" style={{ color: 'var(--color-ink)', fontFamily: 'var(--font-sans)' }}>Plan</span>
+            {profile.isPremium ? (
+              <span className="text-xs font-semibold px-2.5 py-1 rounded-full" style={{ background: 'var(--color-forest)', color: 'white', fontFamily: 'var(--font-sans)' }}>
+                Premium active
+              </span>
+            ) : null}
+          </div>
+          {profile.isPremium ? (
+            <ul className="text-xs space-y-1 mt-2" style={{ color: 'var(--color-ink-muted)', fontFamily: 'var(--font-sans)' }}>
+              <li>✓ Unlimited habits</li>
+              <li>✓ 2 streak freezes / week</li>
+              <li>✓ Auto cloud sync</li>
+              <li>✓ Data export</li>
+            </ul>
           ) : (
-            <p className="text-muted text-sm mt-1 cursor-pointer hover:text-forest transition" onClick={() => { setTaglineInput(profile.tagline); setEditingTagline(true); }}>
-              {profile.tagline || `Mindful since ${joinStr}`}
+            <>
+              <p className="text-xs mb-3" style={{ color: 'var(--color-ink-muted)', fontFamily: 'var(--font-sans)' }}>
+                Free plan — 3 habit limit
+              </p>
+              <button
+                onClick={() => setShowPremiumGate(true)}
+                className="w-full py-2 rounded-xl text-sm font-medium"
+                style={{ background: 'var(--color-forest)', color: 'white', fontFamily: 'var(--font-sans)' }}
+              >
+                Upgrade to Premium
+              </button>
+            </>
+          )}
+        </div>
+      </div>
+
+      {/* Data export/import */}
+      <div className="rounded-2xl overflow-hidden mt-4" style={{ background: 'var(--color-card)' }}>
+        <div className="px-4 py-4">
+          <span className="text-sm font-medium block mb-3" style={{ color: 'var(--color-ink)', fontFamily: 'var(--font-sans)' }}>Data</span>
+          <div className="flex gap-2">
+            <button
+              onClick={() => exportData(habits, profile, reflections, achievements)}
+              className="flex-1 py-2 rounded-xl text-sm font-medium"
+              style={{ background: 'var(--color-bg-soft)', color: 'var(--color-forest)', fontFamily: 'var(--font-sans)' }}
+            >
+              Export
+            </button>
+            <button
+              onClick={() => importInputRef.current?.click()}
+              className="flex-1 py-2 rounded-xl text-sm font-medium"
+              style={{ background: 'var(--color-bg-soft)', color: 'var(--color-forest)', fontFamily: 'var(--font-sans)' }}
+            >
+              Import
+            </button>
+          </div>
+          {importMsg && (
+            <p className="text-xs mt-2 text-center" style={{ color: importMsg.startsWith('Invalid') ? 'var(--color-terracotta)' : 'var(--color-forest)', fontFamily: 'var(--font-sans)' }}>
+              {importMsg}
             </p>
           )}
+          <input
+            ref={importInputRef}
+            type="file"
+            accept=".json"
+            className="hidden"
+            onChange={handleImport}
+          />
         </div>
-      </section>
+      </div>
 
-      {/* Personal Growth Stats */}
-      <section className="px-4 pt-6">
-        <h2 className="text-xs font-bold text-muted tracking-widest mb-3">PERSONAL GROWTH</h2>
-        <div className="grid grid-cols-3 gap-3">
-          <div className="bg-mint rounded-2xl p-4 text-center">
-            <p className="text-2xl mb-1">📋</p>
-            <p className="text-xl font-bold text-forest">{habits.length}</p>
-            <p className="text-xs text-muted mt-0.5">Total Habits</p>
-          </div>
-          <div className="bg-mint rounded-2xl p-4 text-center">
-            <p className="text-2xl mb-1">🔥</p>
-            <p className="text-xl font-bold text-forest">{bestStreak}</p>
-            <p className="text-xs text-muted mt-0.5">Day Streak</p>
-          </div>
-          <div className="bg-mint rounded-2xl p-4 text-center">
-            <p className="text-2xl mb-1">🔄</p>
-            <p className="text-xl font-bold text-forest">{completionRate}%</p>
-            <p className="text-xs text-muted mt-0.5">Completion</p>
-          </div>
-        </div>
-      </section>
-
-      {/* Theme Toggle */}
-      <section className="px-4 pt-6">
-        <h2 className="text-xs font-bold text-muted tracking-widest mb-3">APPEARANCE</h2>
-        <div className="bg-white rounded-2xl p-4 shadow-sm">
-          <div className="flex gap-2">
-            {themeOptions.map((opt) => (
-              <button key={opt.value} onClick={() => setTheme(opt.value)}
-                className={`flex-1 py-3 rounded-xl text-sm font-medium transition cursor-pointer flex flex-col items-center gap-1 ${
-                  theme === opt.value ? 'bg-forest text-white' : 'bg-mint text-forest hover:bg-sage-light'
-                }`}
+      {/* Vacation mode */}
+      <div className="rounded-2xl overflow-hidden mt-4" style={{ background: 'var(--color-card)' }}>
+        <div className="px-4 py-4">
+          <div className="flex items-center justify-between mb-1">
+            <span className="text-sm font-medium" style={{ color: 'var(--color-ink)', fontFamily: 'var(--font-sans)' }}>Vacation mode</span>
+            {profile.vacationMode ? (
+              <button
+                onClick={() => updateProfile({ vacationMode: null })}
+                className="text-xs font-medium px-3 py-1 rounded-full"
+                style={{ background: 'var(--color-terracotta)', color: 'white', fontFamily: 'var(--font-sans)' }}
               >
-                <span className="text-lg">{opt.icon}</span>
-                <span>{opt.label}</span>
+                Clear
               </button>
-            ))}
+            ) : null}
+          </div>
+          <p className="text-xs mb-3" style={{ color: 'var(--color-ink-muted)', fontFamily: 'var(--font-sans)' }}>
+            Dates in this range won't break your streaks.
+          </p>
+          <div className="flex items-center gap-2">
+            <input
+              type="date"
+              value={profile.vacationMode?.start ?? ''}
+              onChange={e => updateProfile({ vacationMode: { start: e.target.value, end: profile.vacationMode?.end ?? e.target.value } })}
+              className="flex-1 px-3 py-2 rounded-xl text-sm outline-none"
+              style={{ background: 'var(--color-bg-soft)', color: 'var(--color-ink)', fontFamily: 'var(--font-sans)' }}
+            />
+            <span className="text-xs" style={{ color: 'var(--color-ink-muted)', fontFamily: 'var(--font-sans)' }}>to</span>
+            <input
+              type="date"
+              value={profile.vacationMode?.end ?? ''}
+              onChange={e => updateProfile({ vacationMode: { start: profile.vacationMode?.start ?? e.target.value, end: e.target.value } })}
+              className="flex-1 px-3 py-2 rounded-xl text-sm outline-none"
+              style={{ background: 'var(--color-bg-soft)', color: 'var(--color-ink)', fontFamily: 'var(--font-sans)' }}
+            />
           </div>
         </div>
-      </section>
+      </div>
 
-      {/* Milestones */}
-      <section className="px-4 pt-6">
-        <div className="flex items-center justify-between mb-3">
-          <h2 className="text-xs font-bold text-muted tracking-widest">MILESTONES</h2>
-          <span className="text-xs font-semibold text-sage bg-mint px-2.5 py-1 rounded-full">{unlockedCount} Unlocked</span>
-        </div>
-        <div className="flex gap-3 overflow-x-auto pb-2 hide-scrollbar">
-          {milestones.map((m) => (
-            <div key={m.id} className={`flex-shrink-0 w-24 text-center ${m.unlocked ? '' : 'opacity-40'}`}>
-              <div className={`w-16 h-16 rounded-full flex items-center justify-center text-2xl mx-auto shadow-sm ${
-                m.unlocked ? 'bg-mint border-2 border-sage' : 'bg-cream border-2 border-gray-200'
-              }`}>{m.unlocked ? m.icon : '🔒'}</div>
-              <p className="text-xs font-semibold text-dark mt-2 leading-tight">{m.name}</p>
-              <p className="text-xs text-muted leading-tight">{m.description}</p>
-            </div>
-          ))}
-        </div>
-      </section>
-
-      {/* Data Management */}
-      <section className="px-4 pt-6">
-        <h2 className="text-xs font-bold text-muted tracking-widest mb-3">DATA</h2>
-        <div className="bg-white rounded-2xl shadow-sm overflow-hidden">
-          <button onClick={handleExport}
-            className="w-full flex items-center gap-3 px-4 py-4 hover:bg-mint transition cursor-pointer border-b border-gray-100">
-            <span className="w-9 h-9 bg-mint rounded-full flex items-center justify-center text-lg">📤</span>
-            <span className="text-sm font-medium text-dark flex-1 text-left">Export Data (JSON)</span>
-            <span className="text-muted text-sm">›</span>
-          </button>
-          <button onClick={() => importInputRef.current?.click()}
-            className="w-full flex items-center gap-3 px-4 py-4 hover:bg-mint transition cursor-pointer">
-            <span className="w-9 h-9 bg-mint rounded-full flex items-center justify-center text-lg">📥</span>
-            <span className="text-sm font-medium text-dark flex-1 text-left">
-              {importStatus === 'success' ? 'Import Successful!' : importStatus === 'error' ? 'Import Failed' : 'Import Data'}
-            </span>
-            <span className="text-muted text-sm">›</span>
-          </button>
-          <input ref={importInputRef} type="file" accept=".json" onChange={handleImport} className="hidden" />
-        </div>
-      </section>
-
-      {/* Menu */}
-      <section className="px-4 pt-6">
-        <div className="bg-white rounded-2xl shadow-sm overflow-hidden">
-          {menuItems.map((item, i) => (
-            <button key={i} onClick={item.action}
-              className={`w-full flex items-center gap-3 px-4 py-4 hover:bg-mint transition cursor-pointer ${
-                i < menuItems.length - 1 ? 'border-b border-gray-100' : ''
-              }`}
-            >
-              <span className="w-9 h-9 bg-mint rounded-full flex items-center justify-center text-lg">{item.icon}</span>
-              <span className="text-sm font-medium text-dark flex-1 text-left">{item.label}</span>
-              <span className="text-muted text-sm">›</span>
-            </button>
-          ))}
-        </div>
-      </section>
+      {showAuth && <AuthModal onClose={() => setShowAuth(false)} />}
     </div>
   );
 }

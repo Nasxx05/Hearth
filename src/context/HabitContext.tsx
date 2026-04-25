@@ -1,486 +1,425 @@
-import { createContext, useContext, useCallback, useEffect, useMemo, useState, type ReactNode } from 'react';
-import { v4 as uuidv4 } from 'uuid';
-import type { Habit, View, Reflection, UserProfile, Milestone, UndoAction, ThemeMode } from '../types/habit';
+import React, { createContext, useContext, useCallback, useEffect, useRef, useState } from 'react';
+import { v4 as uuid } from 'uuid';
+import type { Habit, UserProfile, Reflection, Achievement, UndoAction, View, ThemeMode } from '../types/habit';
 import { useLocalStorage } from '../hooks/useLocalStorage';
-import { getToday, formatDate } from '../utils/dateHelpers';
-import { calculateStreak, calculateLongestStreak } from '../utils/streakCalculator';
+import { todayISO, toISO, addDays } from '../utils/dateHelpers';
+import { calcCurrentStreak, calcLongestStreak } from '../utils/streakCalculator';
+import { useNotifications } from '../hooks/useNotifications';
+import { useSupabaseSync } from '../hooks/useSupabaseSync';
+import type { ExportPayload } from '../utils/exportImport';
 
-const DEFAULT_MILESTONES: Milestone[] = [
-  { id: 'first-step', name: 'First Step', description: 'Complete 1 habit', icon: '🌱', unlocked: false, unlockedAt: null },
-  { id: 'week-warrior', name: 'Week Warrior', description: '7 Day Streak', icon: '🔥', unlocked: false, unlockedAt: null },
-  { id: 'consistent', name: 'Consistent', description: '14 Day Streak', icon: '🌟', unlocked: false, unlockedAt: null },
-  { id: 'month-master', name: 'Month Master', description: '30 Day Streak', icon: '🏆', unlocked: false, unlockedAt: null },
-  { id: 'centurion', name: 'Centurion', description: '100 Completions', icon: '💯', unlocked: false, unlockedAt: null },
-  { id: 'collector', name: 'Collector', description: '5 Active Habits', icon: '📋', unlocked: false, unlockedAt: null },
-  { id: 'reflective', name: 'Reflective', description: '10 Reflections', icon: '📝', unlocked: false, unlockedAt: null },
-  { id: 'perfect-week', name: 'Perfect Week', description: '7 Perfect Days', icon: '💎', unlocked: false, unlockedAt: null },
-];
+// Wipe any previously stored data so the app always starts fresh.
+// Change this token string to force another reset in the future.
+const RESET_TOKEN = 'hearth_reset_v1';
+if (typeof window !== 'undefined' && !localStorage.getItem(RESET_TOKEN)) {
+  Object.keys(localStorage)
+    .filter(k => k.startsWith('hearth_'))
+    .forEach(k => localStorage.removeItem(k));
+  localStorage.setItem(RESET_TOKEN, '1');
+}
 
-interface HabitContextType {
+interface CelebrationInfo {
+  habitName: string;
+  habitIcon: string;
+  habitColor: Habit['color'];
+  streak: number;
+  isPerfectDay: boolean;
+}
+
+interface StreakMilestone {
+  habitName: string;
+  streak: number;
+  habitColor: Habit['color'];
+}
+
+interface HabitContextValue {
   habits: Habit[];
-  currentView: View;
-  hasVisitedBefore: boolean;
-  selectedHabitId: string | null;
   profile: UserProfile;
   reflections: Reflection[];
-  milestones: Milestone[];
-  theme: ThemeMode;
+  achievements: Achievement[];
   undoAction: UndoAction | null;
-  addHabit: (name: string, emoji: string, category?: string, target?: string, schedule?: number[], reminderTime?: string | null) => void;
+  celebration: CelebrationInfo | null;
+  currentView: View;
+  selectedHabitId: string | null;
+  themeMode: ThemeMode;
+  isDark: boolean;
+  showPremiumGate: boolean;
+  newlyUnlockedAchievement: Achievement | null;
+  streakMilestone: StreakMilestone | null;
+
+  addHabit: (h: Omit<Habit, 'id' | 'createdAt' | 'currentStreak' | 'longestStreak' | 'completionDates' | 'isCompletedToday' | 'skipDates' | 'quantityToday' | 'streakFreezes' | 'lastFreezeRefill'>) => void;
+  updateHabit: (id: string, changes: Partial<Habit>) => void;
   deleteHabit: (id: string) => void;
-  toggleHabit: (id: string) => void;
-  editHabit: (id: string, updates: Partial<Pick<Habit, 'name' | 'emoji' | 'category' | 'target' | 'schedule' | 'reminderTime'>>) => void;
-  reorderHabits: (startIndex: number, endIndex: number) => void;
-  setCurrentView: (view: View) => void;
-  setHasVisitedBefore: (value: boolean) => void;
-  selectHabit: (id: string | null) => void;
-  updateProfile: (updates: Partial<UserProfile>) => void;
-  addReflection: (habitId: string, text: string) => void;
-  toggleSkipDay: (habitId: string, date: string) => void;
-  setTheme: (mode: ThemeMode) => void;
-  executeUndo: () => void;
+  toggleHabit: (id: string, date?: string) => void;
+  setQuantity: (id: string, qty: number) => void;
+  skipToday: (id: string) => void;
+
+  updateProfile: (p: Partial<UserProfile>) => void;
+  addReflection: (r: Omit<Reflection, 'id' | 'createdAt'>) => void;
+
+  navigate: (view: View, habitId?: string) => void;
+  setThemeMode: (mode: ThemeMode) => void;
+  setShowPremiumGate: (v: boolean) => void;
   dismissUndo: () => void;
-  exportData: () => string;
-  importData: (json: string) => boolean;
-  completedToday: number;
-  totalHabits: number;
-  scheduledToday: Habit[];
+  executeUndo: () => void;
+  dismissCelebration: () => void;
+  dismissAchievementToast: () => void;
+  dismissStreakMilestone: () => void;
+  importAll: (payload: ExportPayload) => void;
+
+  getHabit: (id: string) => Habit | undefined;
+  todayCompletionRate: () => number;
+  todayCompleted: () => number;
+  weeklyReviewData: () => { week: number; rate: number; dayRates: number[] };
 }
 
-const HabitContext = createContext<HabitContextType | null>(null);
+const HabitContext = createContext<HabitContextValue | null>(null);
 
-// Ensure all habits have required fields (handles data from older versions)
-function migrateHabits(rawHabits: Habit[]): Habit[] {
-  if (!Array.isArray(rawHabits)) return [];
-  return rawHabits.filter((h) => h && typeof h === 'object' && h.id).map((h) => ({
-    ...h,
-    schedule: Array.isArray(h.schedule) ? h.schedule : [0, 1, 2, 3, 4, 5, 6],
-    skipDates: Array.isArray(h.skipDates) ? h.skipDates : [],
-    target: h.target || '',
-    reminderTime: h.reminderTime ?? null,
-    completionDates: Array.isArray(h.completionDates) ? h.completionDates : [],
-    createdAt: h.createdAt || new Date().toISOString(),
-    longestStreak: h.longestStreak || 0,
-    currentStreak: h.currentStreak || 0,
-  }));
+
+function recompute(h: Habit, vacationMode: { start: string; end: string } | null = null): Habit {
+  const today = todayISO();
+  const currentStreak = calcCurrentStreak(h.completionDates, h.schedule, h.skipDates, h.pauseRanges ?? [], vacationMode);
+  const longestStreak = Math.max(h.longestStreak, calcLongestStreak(h.completionDates, h.schedule, h.skipDates, h.pauseRanges ?? [], vacationMode));
+  const isCompletedToday = h.completionDates.includes(today);
+  return { ...h, currentStreak, longestStreak, isCompletedToday };
 }
 
-export function HabitProvider({ children }: { children: ReactNode }) {
-  const [rawHabits, setHabits] = useLocalStorage<Habit[]>('habits', []);
-  const habits = useMemo(() => migrateHabits(rawHabits), [rawHabits]);
-  const [currentView, setCurrentView] = useLocalStorage<View>('currentView', 'welcome');
-  const [hasVisitedBefore, setHasVisitedBefore] = useLocalStorage<boolean>('hasVisited', false);
-  const [lastActiveDate, setLastActiveDate] = useLocalStorage<string>('lastActiveDate', '');
-  const [selectedHabitId, setSelectedHabitId] = useLocalStorage<string | null>('selectedHabitId', null);
-  const [rawProfile, setProfile] = useLocalStorage<UserProfile>('userProfile', {
-    name: 'User',
-    tagline: '',
-    joinDate: new Date().toISOString(),
-    avatar: '',
+function migrateHabits(raw: unknown[]): Habit[] {
+  return raw.map((h: unknown) => {
+    const habit = h as Record<string, unknown>;
+    return {
+      id: habit.id as string ?? uuid(),
+      name: habit.name as string ?? '',
+      icon: (habit.icon as string) ?? (habit.shape ? 'Flame' : 'Flame'),
+      color: (habit.color as string) ?? 'moss',
+      category: (habit.category as string) ?? 'General',
+      targetValue: (habit.targetValue as number) ?? 1,
+      targetUnit: (habit.targetUnit as string) ?? (habit.target as string ? (habit.target as string).split(' ')[1] ?? 'times' : 'times'),
+      createdAt: (habit.createdAt as string) ?? new Date().toISOString(),
+      currentStreak: (habit.currentStreak as number) ?? 0,
+      longestStreak: (habit.longestStreak as number) ?? 0,
+      completionDates: (habit.completionDates as string[]) ?? [],
+      isCompletedToday: (habit.isCompletedToday as boolean) ?? false,
+      schedule: (habit.schedule as number[]) ?? [0, 1, 2, 3, 4, 5, 6],
+      reminderTime: (habit.reminderTime as string | null) ?? null,
+      skipDates: (habit.skipDates as string[]) ?? [],
+      quantityToday: (habit.quantityToday as number) ?? 0,
+      pauseRanges: (habit.pauseRanges as { start: string; end: string }[]) ?? [],
+      streakFreezes: (habit.streakFreezes as number) ?? 0,
+      lastFreezeRefill: (habit.lastFreezeRefill as string) ?? '',
+    } as Habit;
   });
-  const profile = useMemo(() => ({ ...rawProfile, tagline: rawProfile.tagline || '', avatar: rawProfile.avatar || '' }), [rawProfile]);
-  const [reflections, setReflections] = useLocalStorage<Reflection[]>('reflections', []);
-  const [milestones, setMilestones] = useLocalStorage<Milestone[]>('milestones', DEFAULT_MILESTONES);
-  const [theme, setThemeStorage] = useLocalStorage<ThemeMode>('themeMode', 'light');
-  const [undoAction, setUndoAction] = useState<UndoAction | null>(null);
+}
 
-  // Apply theme to document
-  useEffect(() => {
-    const root = document.documentElement;
-    if (theme === 'system') {
-      const prefersDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
-      root.classList.toggle('dark', prefersDark);
-    } else {
-      root.classList.toggle('dark', theme === 'dark');
-    }
-  }, [theme]);
+const DEFAULT_PROFILE: UserProfile = {
+  name: 'You',
+  tagline: 'Building quiet daily wins.',
+  joinDate: new Date().toISOString(),
+  avatar: '',
+  vacationMode: null,
+  isPremium: false,
+};
 
-  // Listen for system theme changes
-  useEffect(() => {
-    if (theme !== 'system') return;
-    const mq = window.matchMedia('(prefers-color-scheme: dark)');
-    const handler = (e: MediaQueryListEvent) => {
-      document.documentElement.classList.toggle('dark', e.matches);
-    };
-    mq.addEventListener('change', handler);
-    return () => mq.removeEventListener('change', handler);
-  }, [theme]);
+const DEFAULT_ACHIEVEMENTS: Achievement[] = [
+  { id: 'a1', name: '7 days', description: 'Complete any habit 7 days in a row', icon: '🔥', unlocked: false, unlockedAt: null },
+  { id: 'a2', name: '30 days', description: '30-day streak on any habit', icon: '🔥', unlocked: false, unlockedAt: null },
+  { id: 'a3', name: '100 days', description: '100-day streak on any habit', icon: '🔥', unlocked: false, unlockedAt: null },
+  { id: 'a4', name: '365 days', description: 'One full year streak', icon: '🔥', unlocked: false, unlockedAt: null },
+  { id: 'a5', name: 'First habit', description: 'Add your first habit', icon: '✦', unlocked: false, unlockedAt: null },
+  { id: 'a6', name: '5 habits', description: 'Track 5 habits at once', icon: '✦', unlocked: false, unlockedAt: null },
+  { id: 'a7', name: 'Perfect week', description: 'Complete all habits every day for a week', icon: '★', unlocked: false, unlockedAt: null },
+  { id: 'a8', name: 'Perfect month', description: 'Perfect week four times in a row', icon: '★', unlocked: false, unlockedAt: null },
+];
 
-  // Auto-dismiss undo after 5 seconds
-  useEffect(() => {
-    if (!undoAction) return;
-    const timer = setTimeout(() => setUndoAction(null), 5000);
-    return () => clearTimeout(timer);
-  }, [undoAction]);
+const STREAK_MILESTONES = [3, 7, 14, 30, 60, 100];
 
-  // Persist migrated habits back to storage if needed
-  useEffect(() => {
-    const needsMigration = rawHabits.some((h) => !h.schedule || !h.skipDates || h.target === undefined);
-    if (needsMigration) {
-      setHabits(migrateHabits(rawHabits));
-    }
-  }, []); // eslint-disable-line react-hooks/exhaustive-deps
-
-  // Check and unlock milestones
-  useEffect(() => {
-    const totalCompletions = habits.reduce((sum, h) => sum + h.completionDates.length, 0);
-    const bestStreak = habits.reduce((max, h) => Math.max(max, h.longestStreak), 0);
-    const today = getToday();
-
-    // Count perfect days (last 30 days)
-    let perfectDayCount = 0;
-    for (let i = 0; i < 30; i++) {
-      const d = new Date();
-      d.setDate(d.getDate() - i);
-      const dateStr = formatDate(d);
-      const scheduled = habits.filter((h) => h.schedule.includes(d.getDay()));
-      if (scheduled.length > 0 && scheduled.every((h) => h.completionDates.includes(dateStr))) {
-        perfectDayCount++;
+function checkAchievements(
+  habits: Habit[],
+  achievements: Achievement[],
+): { updated: Achievement[]; newlyUnlocked: Achievement | null } {
+  const now = new Date().toISOString();
+  let newlyUnlocked: Achievement | null = null;
+  const maxStreak = Math.max(0, ...habits.map(h => h.currentStreak));
+  const updatedAchievements = achievements.map(a => {
+    if (a.unlocked) return a;
+    let shouldUnlock = false;
+    switch (a.id) {
+      case 'a1': shouldUnlock = maxStreak >= 7; break;
+      case 'a2': shouldUnlock = maxStreak >= 30; break;
+      case 'a3': shouldUnlock = maxStreak >= 100; break;
+      case 'a4': shouldUnlock = maxStreak >= 365; break;
+      case 'a5': shouldUnlock = habits.length >= 1; break;
+      case 'a6': shouldUnlock = habits.length >= 5; break;
+      case 'a7': {
+        const today = new Date();
+        const allComplete = Array.from({ length: 7 }, (_, i) => toISO(addDays(today, -i)))
+          .every(iso => habits.length > 0 && habits.every(h => !h.schedule.includes(new Date(iso + 'T12:00:00').getDay()) || h.completionDates.includes(iso) || h.skipDates.includes(iso)));
+        shouldUnlock = allComplete;
+        break;
       }
+      case 'a8': shouldUnlock = false; break;
     }
+    if (shouldUnlock) {
+      const unlocked = { ...a, unlocked: true, unlockedAt: now };
+      if (!newlyUnlocked) newlyUnlocked = unlocked;
+      return unlocked;
+    }
+    return a;
+  });
+  return { updated: updatedAchievements, newlyUnlocked };
+}
 
-    setMilestones((prev: Milestone[]) => {
-      let changed = false;
-      const updated = prev.map((m) => {
-        if (m.unlocked) return m;
-        let shouldUnlock = false;
-        if (m.id === 'first-step' && totalCompletions >= 1) shouldUnlock = true;
-        if (m.id === 'week-warrior' && bestStreak >= 7) shouldUnlock = true;
-        if (m.id === 'consistent' && bestStreak >= 14) shouldUnlock = true;
-        if (m.id === 'month-master' && bestStreak >= 30) shouldUnlock = true;
-        if (m.id === 'centurion' && totalCompletions >= 100) shouldUnlock = true;
-        if (m.id === 'collector' && habits.length >= 5) shouldUnlock = true;
-        if (m.id === 'reflective' && reflections.length >= 10) shouldUnlock = true;
-        if (m.id === 'perfect-week' && perfectDayCount >= 7) shouldUnlock = true;
-        if (shouldUnlock) {
-          changed = true;
-          return { ...m, unlocked: true, unlockedAt: today };
-        }
-        return m;
-      });
-      return changed ? updated : prev;
-    });
-  }, [habits, reflections, setMilestones]);
+export function HabitProvider({ children }: { children: React.ReactNode }) {
+  const [rawHabits, setRawHabits] = useLocalStorage<unknown[]>('hearth_habits', []);
+  const [hasOnboarded, setHasOnboarded] = useLocalStorage<boolean>('hearth_onboarded', false);
+  const [profile, setProfile] = useLocalStorage<UserProfile>('hearth_profile', DEFAULT_PROFILE);
+  const [reflections, setReflections] = useLocalStorage<Reflection[]>('hearth_reflections', []);
+  const [achievements, setAchievements] = useLocalStorage<Achievement[]>('hearth_achievements', DEFAULT_ACHIEVEMENTS);
+  const [currentView, setCurrentView] = useLocalStorage<View>('hearth_view', 'onboarding');
+  const [selectedHabitId, setSelectedHabitId] = useLocalStorage<string | null>('hearth_selected', null);
+  const [themeMode, setThemeModeStored] = useLocalStorage<ThemeMode>('hearth_theme', 'system');
+  const [undoAction, setUndoAction] = useLocalStorage<UndoAction | null>('hearth_undo', null);
+  const [celebration, setCelebration] = useState<CelebrationInfo | null>(null);
+  const [showPremiumGate, setShowPremiumGate] = useState(false);
+  const [newlyUnlockedAchievement, setNewlyUnlockedAchievement] = useState<Achievement | null>(null);
+  const [streakMilestone, setStreakMilestone] = useState<StreakMilestone | null>(null);
+  const undoTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  // Reset daily completion status when the day changes
+  const { debouncedSync } = useSupabaseSync();
+
+  const habits: Habit[] = migrateHabits(rawHabits).map(h => recompute(h, profile.vacationMode ?? null));
+  useNotifications(habits);
+
+  const isDark = themeMode === 'dark' ||
+    (themeMode === 'system' && window.matchMedia('(prefers-color-scheme: dark)').matches);
+
   useEffect(() => {
-    const today = getToday();
-    if (lastActiveDate && lastActiveDate !== today) {
-      setHabits((prev: Habit[]) =>
-        prev.map((habit) => ({
-          ...habit,
-          skipDates: habit.skipDates || [],
-          isCompletedToday: habit.completionDates.includes(today),
-          currentStreak: calculateStreak(habit.completionDates, habit.completionDates.includes(today), habit.skipDates || []),
-        }))
-      );
-    }
-    setLastActiveDate(today);
-  }, [lastActiveDate, setHabits, setLastActiveDate]);
+    if (isDark) document.documentElement.classList.add('dark');
+    else document.documentElement.classList.remove('dark');
+  }, [isDark]);
 
-  // Midnight check interval
+  // Monday freeze refill on mount
   useEffect(() => {
-    const checkMidnight = setInterval(() => {
-      const today = getToday();
-      if (lastActiveDate !== today) {
-        setLastActiveDate(today);
-        setHabits((prev: Habit[]) =>
-          prev.map((habit) => ({
-            ...habit,
-            isCompletedToday: false,
-            currentStreak: calculateStreak(habit.completionDates, false, habit.skipDates || []),
-          }))
-        );
-      }
-    }, 60000);
-    return () => clearInterval(checkMidnight);
-  }, [lastActiveDate, setLastActiveDate, setHabits]);
-
-  // Request notification permission on first reminder set
-  const requestNotificationPermission = useCallback(async () => {
-    if ('Notification' in window && Notification.permission === 'default') {
-      await Notification.requestPermission();
-    }
+    const today = todayISO();
+    const dayOfWeek = new Date().getDay(); // 0=Sun,1=Mon
+    if (dayOfWeek !== 1) return;
+    const needsRefill = habits.some(h => h.lastFreezeRefill < today);
+    if (!needsRefill) return;
+    const updated = habits.map(h => ({
+      ...h,
+      streakFreezes: Math.min(2, h.streakFreezes + 2),
+      lastFreezeRefill: today,
+    }));
+    setRawHabits(updated);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // Schedule notifications
-  useEffect(() => {
-    if (!('Notification' in window) || Notification.permission !== 'granted') return;
+  const saveHabitsAndSync = useCallback((updated: Habit[]) => {
+    setRawHabits(updated);
+    debouncedSync(updated, profile, reflections);
+  }, [setRawHabits, debouncedSync, profile, reflections]);
 
-    const today = new Date();
-    const dayOfWeek = today.getDay();
-    const timers: ReturnType<typeof setTimeout>[] = [];
+  const runCheckAchievements = useCallback((currentHabits: Habit[]) => {
+    const { updated, newlyUnlocked } = checkAchievements(currentHabits, achievements);
+    if (newlyUnlocked) {
+      setAchievements(updated);
+      setNewlyUnlockedAchievement(newlyUnlocked);
+    }
+  }, [achievements, setAchievements]);
 
-    habits.forEach((habit) => {
-      if (!habit.reminderTime || !habit.schedule.includes(dayOfWeek) || habit.isCompletedToday) return;
+  const addHabit = useCallback((data: Omit<Habit, 'id' | 'createdAt' | 'currentStreak' | 'longestStreak' | 'completionDates' | 'isCompletedToday' | 'skipDates' | 'quantityToday' | 'streakFreezes' | 'lastFreezeRefill'>) => {
+    if (!profile.isPremium && habits.length >= 3) {
+      setShowPremiumGate(true);
+      return;
+    }
+    const newHabit: Habit = {
+      ...data,
+      id: uuid(),
+      createdAt: new Date().toISOString(),
+      currentStreak: 0,
+      longestStreak: 0,
+      completionDates: [],
+      isCompletedToday: false,
+      skipDates: [],
+      quantityToday: 0,
+      streakFreezes: 0,
+      lastFreezeRefill: '',
+    };
+    const updated = [...habits, newHabit];
+    saveHabitsAndSync(updated);
+    runCheckAchievements(updated);
+  }, [habits, profile.isPremium, saveHabitsAndSync, runCheckAchievements]);
 
-      const [hours, minutes] = habit.reminderTime.split(':').map(Number);
-      const reminderDate = new Date();
-      reminderDate.setHours(hours, minutes, 0, 0);
+  const updateHabit = useCallback((id: string, changes: Partial<Habit>) => {
+    const updated = habits.map(h => h.id === id ? recompute({ ...h, ...changes }) : h);
+    saveHabitsAndSync(updated);
+  }, [habits, saveHabitsAndSync]);
 
-      const delay = reminderDate.getTime() - Date.now();
-      if (delay > 0 && delay < 24 * 60 * 60 * 1000) {
-        const timer = setTimeout(() => {
-          new Notification(`${habit.emoji} ${habit.name}`, {
-            body: `Time to complete your habit! ${habit.target || ''}`.trim(),
-            icon: '/favicon.ico',
-          });
-        }, delay);
-        timers.push(timer);
-      }
-    });
+  const deleteHabit = useCallback((id: string) => {
+    const habit = habits.find(h => h.id === id);
+    if (!habit) return;
+    setUndoAction({ type: 'delete', habitId: id, habitData: habit, timestamp: Date.now() });
+    saveHabitsAndSync(habits.filter(h => h.id !== id));
+    if (undoTimer.current) clearTimeout(undoTimer.current);
+    undoTimer.current = setTimeout(() => setUndoAction(null), 5000);
+  }, [habits, saveHabitsAndSync, setUndoAction]);
 
-    return () => timers.forEach(clearTimeout);
-  }, [habits]);
+  const toggleHabit = useCallback((id: string, date?: string) => {
+    const targetDate = date ?? todayISO();
+    const today = todayISO();
+    const habit = habits.find(h => h.id === id);
+    if (!habit) return;
 
-  const addHabit = useCallback(
-    (name: string, emoji: string, category = 'General', target = '', schedule: number[] = [0, 1, 2, 3, 4, 5, 6], reminderTime: string | null = null) => {
-      if (reminderTime) requestNotificationPermission();
-      const newHabit: Habit = {
-        id: uuidv4(),
-        name,
-        emoji,
-        category,
-        createdAt: new Date().toISOString(),
-        currentStreak: 0,
-        longestStreak: 0,
-        completionDates: [],
-        isCompletedToday: false,
-        schedule,
-        reminderTime,
-        target,
-        skipDates: [],
-      };
-      setHabits((prev: Habit[]) => [...prev, newHabit]);
-    },
-    [setHabits, requestNotificationPermission]
-  );
-
-  const deleteHabit = useCallback(
-    (id: string) => {
-      const habitToDelete = habits.find((h) => h.id === id);
-      if (habitToDelete) {
-        setUndoAction({ type: 'delete', habitId: id, habitData: { ...habitToDelete }, timestamp: Date.now() });
-      }
-      setHabits((prev: Habit[]) => prev.filter((h) => h.id !== id));
-    },
-    [habits, setHabits]
-  );
-
-  const toggleHabit = useCallback(
-    (id: string) => {
-      const today = getToday();
-      setHabits((prev: Habit[]) =>
-        prev.map((habit) => {
-          if (habit.id !== id) return habit;
-          const newCompleted = !habit.isCompletedToday;
-          let newDates: string[];
-          if (newCompleted) {
-            newDates = habit.completionDates.includes(today)
-              ? habit.completionDates
-              : [...habit.completionDates, today];
-          } else {
-            newDates = habit.completionDates.filter((d) => d !== today);
-          }
-          const skipDates = habit.skipDates || [];
-          const newStreak = calculateStreak(newDates, newCompleted, skipDates);
-          const newLongest = Math.max(calculateLongestStreak(newDates, skipDates), habit.longestStreak);
-          return {
-            ...habit,
-            isCompletedToday: newCompleted,
-            completionDates: newDates,
-            currentStreak: newStreak,
-            longestStreak: newLongest,
-          };
-        })
-      );
+    const wasCompleted = habit.completionDates.includes(targetDate);
+    if (targetDate === today) {
       setUndoAction({ type: 'toggle', habitId: id, timestamp: Date.now() });
-    },
-    [setHabits]
-  );
+    }
 
-  const editHabit = useCallback(
-    (id: string, updates: Partial<Pick<Habit, 'name' | 'emoji' | 'category' | 'target' | 'schedule' | 'reminderTime'>>) => {
-      if (updates.reminderTime) requestNotificationPermission();
-      setHabits((prev: Habit[]) =>
-        prev.map((h) => (h.id === id ? { ...h, ...updates } : h))
-      );
-    },
-    [setHabits, requestNotificationPermission]
-  );
+    let newDates = wasCompleted
+      ? habit.completionDates.filter(d => d !== targetDate)
+      : [...habit.completionDates, targetDate];
 
-  const reorderHabits = useCallback(
-    (startIndex: number, endIndex: number) => {
-      setHabits((prev: Habit[]) => {
-        const result = [...prev];
-        const [removed] = result.splice(startIndex, 1);
-        result.splice(endIndex, 0, removed);
-        return result;
-      });
-    },
-    [setHabits]
-  );
+    let newFreezes = habit.streakFreezes;
 
-  const selectHabit = useCallback(
-    (id: string | null) => {
-      setSelectedHabitId(id);
-      if (id) setCurrentView('habit-detail');
-    },
-    [setSelectedHabitId, setCurrentView]
-  );
+    // Streak freeze: bridge missed yesterday when completing today (premium only)
+    if (!wasCompleted && targetDate === today && profile.isPremium && habit.streakFreezes > 0) {
+      const yesterday = toISO(addDays(new Date(), -1));
+      const yesterdayDayOfWeek = new Date(yesterday + 'T12:00:00').getDay();
+      const isScheduledYesterday = habit.schedule.includes(yesterdayDayOfWeek);
+      const missedYesterday = isScheduledYesterday &&
+        !habit.completionDates.includes(yesterday) &&
+        !habit.skipDates.includes(yesterday);
+      if (missedYesterday) {
+        newDates = [...newDates, yesterday];
+        newFreezes = habit.streakFreezes - 1;
+      }
+    }
 
-  const updateProfile = useCallback(
-    (updates: Partial<UserProfile>) => {
-      setProfile((prev: UserProfile) => ({ ...prev, ...updates }));
-    },
-    [setProfile]
-  );
+    const updatedHabit = recompute({ ...habit, completionDates: newDates, streakFreezes: newFreezes });
+    const updated = habits.map(h => h.id === id ? updatedHabit : h);
+    saveHabitsAndSync(updated);
 
-  const addReflection = useCallback(
-    (habitId: string, text: string) => {
-      const newReflection: Reflection = {
-        id: uuidv4(),
-        habitId,
-        date: getToday(),
-        text,
-        createdAt: new Date().toISOString(),
-      };
-      setReflections((prev: Reflection[]) => [newReflection, ...prev]);
-    },
-    [setReflections]
-  );
+    if (!wasCompleted) {
+      const newStreak = updatedHabit.currentStreak;
+      const othersDone = habits.filter(h => h.id !== id && h.completionDates.includes(today)).length;
+      const isPerfectDay = targetDate === today && othersDone === habits.length - 1;
+      setCelebration({ habitName: habit.name, habitIcon: habit.icon, habitColor: habit.color, streak: newStreak, isPerfectDay });
 
-  const toggleSkipDay = useCallback(
-    (habitId: string, date: string) => {
-      setHabits((prev: Habit[]) =>
-        prev.map((h) => {
-          if (h.id !== habitId) return h;
-          const skipDates = h.skipDates || [];
-          const newSkipDates = skipDates.includes(date)
-            ? skipDates.filter((d) => d !== date)
-            : [...skipDates, date];
-          const newStreak = calculateStreak(h.completionDates, h.isCompletedToday, newSkipDates);
-          const newLongest = Math.max(calculateLongestStreak(h.completionDates, newSkipDates), h.longestStreak);
-          return { ...h, skipDates: newSkipDates, currentStreak: newStreak, longestStreak: newLongest };
-        })
-      );
-    },
-    [setHabits]
-  );
+      if (STREAK_MILESTONES.includes(newStreak)) {
+        setStreakMilestone({ habitName: habit.name, streak: newStreak, habitColor: habit.color });
+      }
 
-  const setTheme = useCallback(
-    (mode: ThemeMode) => {
-      setThemeStorage(mode);
-    },
-    [setThemeStorage]
-  );
+      runCheckAchievements(updated);
+    }
+
+    if (targetDate === today) {
+      if (undoTimer.current) clearTimeout(undoTimer.current);
+      undoTimer.current = setTimeout(() => setUndoAction(null), 4000);
+    }
+  }, [habits, profile.isPremium, saveHabitsAndSync, setUndoAction, runCheckAchievements]);
+
+  const setQuantity = useCallback((id: string, qty: number) => {
+    const updated = habits.map(h => h.id === id ? { ...h, quantityToday: qty } : h);
+    saveHabitsAndSync(updated);
+  }, [habits, saveHabitsAndSync]);
+
+  const skipToday = useCallback((id: string) => {
+    const today = todayISO();
+    const updated = habits.map(h =>
+      h.id === id ? recompute({ ...h, skipDates: [...h.skipDates, today] }) : h
+    );
+    saveHabitsAndSync(updated);
+  }, [habits, saveHabitsAndSync]);
+
+  const updateProfile = useCallback((p: Partial<UserProfile>) => {
+    const updated = { ...profile, ...p };
+    setProfile(updated);
+    debouncedSync(habits, updated, reflections);
+  }, [profile, setProfile, debouncedSync, habits, reflections]);
+
+  const addReflection = useCallback((r: Omit<Reflection, 'id' | 'createdAt'>) => {
+    const newRef: Reflection = { ...r, id: uuid(), createdAt: new Date().toISOString() };
+    setReflections([...reflections, newRef]);
+  }, [reflections, setReflections]);
+
+  const navigate = useCallback((view: View, habitId?: string) => {
+    if (habitId !== undefined) setSelectedHabitId(habitId);
+    setCurrentView(view);
+    if (view === 'home' && !hasOnboarded) setHasOnboarded(true);
+  }, [setCurrentView, setSelectedHabitId, hasOnboarded, setHasOnboarded]);
+
+  const setThemeMode = useCallback((mode: ThemeMode) => {
+    setThemeModeStored(mode);
+  }, [setThemeModeStored]);
+
+  const dismissUndo = useCallback(() => {
+    setUndoAction(null);
+    if (undoTimer.current) clearTimeout(undoTimer.current);
+  }, [setUndoAction]);
+
+  const dismissCelebration = useCallback(() => setCelebration(null), []);
+  const dismissAchievementToast = useCallback(() => setNewlyUnlockedAchievement(null), []);
+  const dismissStreakMilestone = useCallback(() => setStreakMilestone(null), []);
 
   const executeUndo = useCallback(() => {
     if (!undoAction) return;
     if (undoAction.type === 'toggle') {
-      const today = getToday();
-      setHabits((prev: Habit[]) =>
-        prev.map((habit) => {
-          if (habit.id !== undoAction.habitId) return habit;
-          const newCompleted = !habit.isCompletedToday;
-          let newDates: string[];
-          if (newCompleted) {
-            newDates = habit.completionDates.includes(today)
-              ? habit.completionDates
-              : [...habit.completionDates, today];
-          } else {
-            newDates = habit.completionDates.filter((d) => d !== today);
-          }
-          const skipDates = habit.skipDates || [];
-          const newStreak = calculateStreak(newDates, newCompleted, skipDates);
-          const newLongest = Math.max(calculateLongestStreak(newDates, skipDates), habit.longestStreak);
-          return { ...habit, isCompletedToday: newCompleted, completionDates: newDates, currentStreak: newStreak, longestStreak: newLongest };
-        })
-      );
+      toggleHabit(undoAction.habitId);
     } else if (undoAction.type === 'delete' && undoAction.habitData) {
-      setHabits((prev: Habit[]) => [...prev, undoAction.habitData!]);
+      saveHabitsAndSync([...habits, undoAction.habitData]);
     }
     setUndoAction(null);
-  }, [undoAction, setHabits]);
+    if (undoTimer.current) clearTimeout(undoTimer.current);
+  }, [undoAction, habits, toggleHabit, saveHabitsAndSync, setUndoAction]);
 
-  const dismissUndo = useCallback(() => {
-    setUndoAction(null);
-  }, []);
+  const importAll = useCallback((payload: ExportPayload) => {
+    setRawHabits(payload.habits);
+    setProfile(payload.profile);
+    setReflections(payload.reflections);
+    setAchievements(payload.achievements);
+  }, [setRawHabits, setProfile, setReflections, setAchievements]);
 
-  const exportData = useCallback(() => {
-    return JSON.stringify({
-      habits,
-      profile,
-      reflections,
-      milestones,
-      exportDate: new Date().toISOString(),
-      version: 2,
-    }, null, 2);
-  }, [habits, profile, reflections, milestones]);
+  const getHabit = useCallback((id: string) => habits.find(h => h.id === id), [habits]);
 
-  const importData = useCallback((json: string): boolean => {
-    try {
-      const data = JSON.parse(json);
-      if (data.habits && Array.isArray(data.habits)) {
-        setHabits(data.habits.map((h: Habit) => ({ ...h, skipDates: h.skipDates || [] })));
-      }
-      if (data.profile) setProfile(data.profile);
-      if (data.reflections) setReflections(data.reflections);
-      if (data.milestones) setMilestones(data.milestones);
-      return true;
-    } catch {
-      return false;
+  const todayCompleted = useCallback(() => {
+    const today = todayISO();
+    return habits.filter(h => h.completionDates.includes(today)).length;
+  }, [habits]);
+
+  const todayCompletionRate = useCallback(() => {
+    if (habits.length === 0) return 0;
+    return Math.round((todayCompleted() / habits.length) * 100);
+  }, [habits, todayCompleted]);
+
+  const weeklyReviewData = useCallback(() => {
+    const today = new Date();
+    const weekNum = Math.ceil((today.getDate()) / 7);
+    const dayRates: number[] = [];
+    for (let i = 6; i >= 0; i--) {
+      const iso = toISO(addDays(today, -i));
+      const completed = habits.filter(h => h.completionDates.includes(iso)).length;
+      dayRates.push(habits.length > 0 ? completed / habits.length : 0);
     }
-  }, [setHabits, setProfile, setReflections, setMilestones]);
+    const rate = Math.round(dayRates.reduce((a, b) => a + b, 0) / 7 * 100);
+    return { week: weekNum, rate, dayRates };
+  }, [habits]);
 
-  const today = new Date();
-  const dayOfWeek = today.getDay();
-  const scheduledToday = habits.filter((h) => h.schedule.includes(dayOfWeek));
-  const completedToday = scheduledToday.filter((h) => h.isCompletedToday).length;
-  const totalHabits = scheduledToday.length;
+  const value: HabitContextValue = {
+    habits, profile, reflections, achievements, undoAction, celebration,
+    currentView, selectedHabitId, themeMode, isDark,
+    showPremiumGate, newlyUnlockedAchievement, streakMilestone,
+    addHabit, updateHabit, deleteHabit, toggleHabit, setQuantity, skipToday,
+    updateProfile, addReflection,
+    navigate, setThemeMode, setShowPremiumGate, dismissUndo, executeUndo,
+    dismissCelebration, dismissAchievementToast, dismissStreakMilestone, importAll,
+    getHabit, todayCompletionRate, todayCompleted, weeklyReviewData,
+  };
 
-  return (
-    <HabitContext.Provider
-      value={{
-        habits,
-        currentView,
-        hasVisitedBefore,
-        selectedHabitId,
-        profile,
-        reflections,
-        milestones,
-        theme,
-        undoAction,
-        addHabit,
-        deleteHabit,
-        toggleHabit,
-        editHabit,
-        reorderHabits,
-        setCurrentView,
-        setHasVisitedBefore,
-        selectHabit,
-        updateProfile,
-        addReflection,
-        toggleSkipDay,
-        setTheme,
-        executeUndo,
-        dismissUndo,
-        exportData,
-        importData,
-        completedToday,
-        totalHabits,
-        scheduledToday,
-      }}
-    >
-      {children}
-    </HabitContext.Provider>
-  );
+  return <HabitContext.Provider value={value}>{children}</HabitContext.Provider>;
 }
 
-export function useHabits() {
-  const context = useContext(HabitContext);
-  if (!context) {
-    throw new Error('useHabits must be used within a HabitProvider');
-  }
-  return context;
+export function useHabits(): HabitContextValue {
+  const ctx = useContext(HabitContext);
+  if (!ctx) throw new Error('useHabits must be used inside HabitProvider');
+  return ctx;
 }

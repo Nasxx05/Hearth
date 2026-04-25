@@ -1,366 +1,300 @@
-import { useState, useEffect, useRef, useCallback } from 'react';
+import { useState } from 'react';
 import { useHabits } from '../context/HabitContext';
-import { getGreeting, formatDate } from '../utils/dateHelpers';
+import CompletionRing from './CompletionRing';
 import HabitCard from './HabitCard';
 import AddHabitModal from './AddHabitModal';
+import ShareCard from './ShareCard';
+import { addDays, toISO, getGreeting, todayISO } from '../utils/dateHelpers';
 
-const DAY_LABELS = ['SUN', 'MON', 'TUE', 'WED', 'THU', 'FRI', 'SAT'];
+const DAY_LABELS = ['S', 'M', 'T', 'W', 'T', 'F', 'S'];
+
+function isScheduledOn(schedule: number[], iso: string): boolean {
+  const d = new Date(iso + 'T12:00:00');
+  return schedule.includes(d.getDay());
+}
+
+function isInPauseRange(pauseRanges: { start: string; end: string }[], iso: string): boolean {
+  return pauseRanges.some(r => iso >= r.start && iso <= r.end);
+}
 
 export default function Dashboard() {
-  const { habits, scheduledToday, completedToday, totalHabits, profile, setCurrentView, toggleHabit, reorderHabits } = useHabits();
-  const [showAddModal, setShowAddModal] = useState(false);
-  const [selectedDate, setSelectedDate] = useState<string>(formatDate(new Date()));
-  const [showJourneyMenu, setShowJourneyMenu] = useState(false);
-  const [categoryFilter, setCategoryFilter] = useState<string>('all');
-  const [dragIndex, setDragIndex] = useState<number | null>(null);
-  const scrollRef = useRef<HTMLDivElement>(null);
-  const todayRef = useRef<HTMLDivElement>(null);
+  const { habits, profile, todayCompletionRate, todayCompleted, navigate } = useHabits();
+  const [showAdd, setShowAdd] = useState(false);
+  const [showShare, setShowShare] = useState(false);
+  const [selectedDate, setSelectedDate] = useState(todayISO());
+  const [selectedCategory, setSelectedCategory] = useState('All');
 
-  // Listen for FAB open event
-  useEffect(() => {
-    const handler = () => setShowAddModal(true);
-    window.addEventListener('open-add-habit', handler);
-    return () => window.removeEventListener('open-add-habit', handler);
-  }, []);
+  const today = todayISO();
+  const rate = todayCompletionRate();
+  const completed = todayCompleted();
+  const total = habits.length;
 
-  // Close journey menu when clicking outside
-  useEffect(() => {
-    if (!showJourneyMenu) return;
-    const handler = () => setShowJourneyMenu(false);
-    window.addEventListener('click', handler);
-    return () => window.removeEventListener('click', handler);
-  }, [showJourneyMenu]);
+  const days5 = Array.from({ length: 5 }, (_, i) => toISO(addDays(new Date(), i - 4)));
 
-  // Scroll to today on mount
-  useEffect(() => {
-    if (todayRef.current && scrollRef.current) {
-      const container = scrollRef.current;
-      const el = todayRef.current;
-      container.scrollLeft = el.offsetLeft - container.clientWidth / 2 + el.clientWidth / 2;
-    }
-  }, []);
+  const incompleteHabits = habits.filter(h => !h.completionDates.includes(today));
+  const nudge = incompleteHabits.length > 0
+    ? `${incompleteHabits.slice(0, 2).map(h => h.name).join(' · ')}${incompleteHabits.length > 2 ? ` · +${incompleteHabits.length - 2}` : ''}`
+    : null;
 
-  const greeting = getGreeting();
-  const today = new Date();
-  const todayStr = formatDate(today);
-  const isViewingToday = selectedDate === todayStr;
+  const topStreak = habits.length > 0 ? Math.max(...habits.map(h => h.currentStreak)) : 0;
 
-  // Generate 6 weeks of dates
-  const dates = Array.from({ length: 42 }).map((_, i) => {
-    const d = new Date(today);
-    d.setDate(today.getDate() - 28 + i);
-    const dateStr = formatDate(d);
-    return {
-      label: DAY_LABELS[d.getDay()],
-      date: d.getDate(),
-      month: d.toLocaleDateString('en-US', { month: 'short' }),
-      dateStr,
-      isToday: dateStr === todayStr,
-      isSelected: dateStr === selectedDate,
-      isFirstOfMonth: d.getDate() === 1,
-    };
-  });
+  const habitsForDate = habits.filter(h =>
+    isScheduledOn(h.schedule, selectedDate) &&
+    !h.skipDates.includes(selectedDate) &&
+    !isInPauseRange(h.pauseRanges, selectedDate)
+  );
 
-  // For today: use scheduled habits; for past dates: use schedule-aware
-  const selDateObj = new Date(selectedDate + 'T12:00:00');
-  const selDow = selDateObj.getDay();
-  const habitsScheduledOnDate = habits.filter((h) => h.schedule.includes(selDow));
-  const habitsCompletedOnDate = habitsScheduledOnDate.filter((h) => h.completionDates.includes(selectedDate)).length;
-  const displayCompleted = isViewingToday ? completedToday : habitsCompletedOnDate;
-  const displayTotal = isViewingToday ? totalHabits : habitsScheduledOnDate.length;
-  const percent = displayTotal > 0 ? Math.round((displayCompleted / displayTotal) * 100) : 0;
+  const categories = ['All', ...Array.from(new Set(habits.map(h => h.category)))];
 
-  // Category filtering
-  const categories = ['all', ...new Set(scheduledToday.map((h) => h.category))];
-  const filteredHabits = categoryFilter === 'all'
-    ? scheduledToday
-    : scheduledToday.filter((h) => h.category === categoryFilter);
-
-  const selDateDisplay = isViewingToday
-    ? 'Today'
-    : selDateObj.toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' });
-
-  // Drag-to-reorder handlers — map filtered indices to full habits array indices
-  const getHabitIndex = useCallback((filteredIndex: number) => {
-    const habit = filteredHabits[filteredIndex];
-    return habits.findIndex((h) => h.id === habit?.id);
-  }, [filteredHabits, habits]);
-
-  const handleDragStart = useCallback((index: number) => {
-    setDragIndex(index);
-  }, []);
-
-  const handleDragOver = useCallback((e: React.DragEvent, index: number) => {
-    e.preventDefault();
-    if (dragIndex !== null && dragIndex !== index) {
-      const fromIndex = getHabitIndex(dragIndex);
-      const toIndex = getHabitIndex(index);
-      if (fromIndex !== -1 && toIndex !== -1) {
-        reorderHabits(fromIndex, toIndex);
-      }
-      setDragIndex(index);
-    }
-  }, [dragIndex, reorderHabits, getHabitIndex]);
-
-  const handleDragEnd = useCallback(() => {
-    setDragIndex(null);
-  }, []);
+  const filteredHabits = habitsForDate.filter(h =>
+    selectedCategory === 'All' || h.category === selectedCategory
+  );
 
   return (
-    <div className="max-w-3xl mx-auto pb-24 animate-fade-in">
-      {/* Greeting */}
-      <section className="px-4 pt-4 pb-2">
-        <div className="flex items-center justify-between">
-          <div className="flex items-center gap-3">
-            <button
-              onClick={() => setCurrentView('profile')}
-              className="w-10 h-10 rounded-full bg-mint flex items-center justify-center text-lg cursor-pointer hover:ring-2 hover:ring-sage transition overflow-hidden"
-            >
-              {profile.avatar ? (
-                <img src={profile.avatar} alt="" className="w-full h-full object-cover" />
-              ) : (
-                '👤'
-              )}
-            </button>
-            <div>
-              <p className="text-sm text-muted">{greeting.text}</p>
-              <p className="text-lg font-bold text-dark">{profile.name}</p>
-            </div>
-          </div>
+    <div className="max-w-lg mx-auto px-4 pt-12 pb-6">
+      {/* Header */}
+      <div className="flex items-start justify-between mb-6">
+        <div>
+          <p className="text-xs font-medium tracking-widest mb-1" style={{ color: 'var(--color-ink-muted)', fontFamily: 'var(--font-sans)' }}>
+            {new Date().toLocaleDateString('en-US', { weekday: 'long', month: 'short', day: 'numeric' }).toUpperCase()}
+          </p>
+          <h1 className="font-display text-3xl font-medium leading-tight" style={{ color: 'var(--color-ink)' }}>
+            {getGreeting()}, {profile.name}.
+          </h1>
+        </div>
+        <div className="flex items-center gap-2">
           <button
-            onClick={() => setCurrentView('weekly-review')}
-            className="px-3 py-1.5 rounded-full bg-mint text-forest text-xs font-semibold hover:bg-sage-light transition cursor-pointer"
+            onClick={() => setShowShare(true)}
+            className="w-9 h-9 rounded-full flex items-center justify-center"
+            style={{ background: 'var(--color-card)' }}
+            aria-label="Share progress"
           >
-            Weekly Review
+            <svg width="15" height="15" viewBox="0 0 15 15" fill="none">
+              <circle cx="12" cy="3" r="1.5" stroke="var(--color-ink-muted)" strokeWidth={1.4} />
+              <circle cx="3" cy="7.5" r="1.5" stroke="var(--color-ink-muted)" strokeWidth={1.4} />
+              <circle cx="12" cy="12" r="1.5" stroke="var(--color-ink-muted)" strokeWidth={1.4} />
+              <path d="M4.5 8.3L10.5 11.2M10.5 3.8L4.5 6.7" stroke="var(--color-ink-muted)" strokeWidth={1.4} strokeLinecap="round" />
+            </svg>
+          </button>
+          <button
+            onClick={() => navigate('profile')}
+            className="w-10 h-10 rounded-full overflow-hidden shrink-0 flex items-center justify-center text-sm font-semibold"
+            style={profile.avatar ? {} : { background: 'var(--color-forest)', color: 'oklch(0.88 0.09 92)', fontFamily: 'var(--font-sans)' }}
+          >
+            {profile.avatar ? (
+              <img src={profile.avatar} alt="Avatar" className="w-full h-full object-cover" />
+            ) : (
+              profile.name.charAt(0).toUpperCase()
+            )}
           </button>
         </div>
-      </section>
+      </div>
 
-      {/* Scrollable Date Selector */}
-      <section className="px-4 pt-3 pb-1">
-        <div
-          ref={scrollRef}
-          className="flex gap-1 overflow-x-auto pb-2 hide-scrollbar scroll-smooth snap-x snap-mandatory"
-          style={{ WebkitOverflowScrolling: 'touch', touchAction: 'pan-x' }}
-        >
-          {dates.map((d) => (
-            <div
-              key={d.dateStr}
-              ref={d.isToday ? todayRef : undefined}
-              onClick={() => setSelectedDate(d.dateStr)}
-              className={`flex flex-col items-center gap-1 cursor-pointer flex-shrink-0 px-2 py-1.5 rounded-xl snap-center transition-all ${
-                d.isSelected ? 'bg-mint scale-105' : 'opacity-70 hover:opacity-100 active:scale-95'
-              }`}
-            >
-              <span className="text-[10px] text-muted font-medium">{d.label}</span>
-              <div
-                className={`w-10 h-10 rounded-full flex items-center justify-center text-sm font-bold transition-all ${
-                  d.isSelected
-                    ? 'bg-forest text-white shadow-md shadow-forest/20'
-                    : d.isToday
-                    ? 'ring-2 ring-forest text-forest'
-                    : 'text-dark hover:bg-mint'
-                }`}
-              >
-                {d.date}
+      {/* Hero card */}
+      <div className="rounded-3xl p-5 mb-4 animate-slide-up" style={{ background: 'var(--color-card)' }}>
+        <div className="flex items-center gap-5">
+          <CompletionRing
+            percent={rate}
+            size={100}
+            strokeWidth={8}
+            trackColor="var(--color-forest)"
+            fillColor="var(--color-forest)"
+          >
+            <div className="text-center">
+              <div className="font-mono font-medium text-lg leading-none" style={{ color: 'var(--color-forest)' }}>
+                {rate}<span className="text-xs">%</span>
               </div>
-              {d.isFirstOfMonth && (
-                <span className="text-[9px] text-sage font-semibold">{d.month}</span>
-              )}
+              <div className="text-[9px] mt-0.5" style={{ color: 'var(--color-ink-muted)', fontFamily: 'var(--font-sans)' }}>
+                OF TODAY
+              </div>
             </div>
-          ))}
-        </div>
-      </section>
+          </CompletionRing>
 
-      {/* Daily Journey Card */}
-      <section className="px-4 pt-4">
-        <div className="bg-white rounded-2xl p-5 shadow-sm">
-          <div className="flex items-start justify-between mb-3">
-            <p className="text-xs font-bold text-muted tracking-widest">
-              {isViewingToday ? 'DAILY JOURNEY' : selDateDisplay.toUpperCase()}
-            </p>
-            <div className="relative">
-              <button
-                onClick={(e) => {
-                  e.stopPropagation();
-                  setShowJourneyMenu((v) => !v);
-                }}
-                className="text-muted text-sm cursor-pointer hover:text-dark transition px-1"
-              >
-                ⋯
-              </button>
-              {showJourneyMenu && (
-                <div className="absolute right-0 top-6 bg-white rounded-xl shadow-lg border border-gray-100 py-1 z-50 min-w-[180px]">
-                  {isViewingToday && displayCompleted < displayTotal && displayTotal > 0 && (
-                    <button
-                      onClick={() => {
-                        scheduledToday.forEach((h) => {
-                          if (!h.isCompletedToday) toggleHabit(h.id);
-                        });
-                        setShowJourneyMenu(false);
-                      }}
-                      className="w-full text-left px-4 py-2.5 text-sm text-dark hover:bg-mint transition flex items-center gap-2 cursor-pointer"
-                    >
-                      <span>✅</span> Complete All
-                    </button>
-                  )}
-                  <button
-                    onClick={() => {
-                      const text = `${profile.name}'s Habit Progress: ${displayCompleted}/${displayTotal} completed (${percent}%)`;
-                      navigator.clipboard.writeText(text);
-                      setShowJourneyMenu(false);
-                    }}
-                    className="w-full text-left px-4 py-2.5 text-sm text-dark hover:bg-mint transition flex items-center gap-2 cursor-pointer"
-                  >
-                    <span>📋</span> Copy Progress
-                  </button>
-                  <button
-                    onClick={() => { setCurrentView('calendar'); setShowJourneyMenu(false); }}
-                    className="w-full text-left px-4 py-2.5 text-sm text-dark hover:bg-mint transition flex items-center gap-2 cursor-pointer"
-                  >
-                    <span>📅</span> Full Calendar
-                  </button>
-                  <button
-                    onClick={() => { setCurrentView('weekly-review'); setShowJourneyMenu(false); }}
-                    className="w-full text-left px-4 py-2.5 text-sm text-dark hover:bg-mint transition flex items-center gap-2 cursor-pointer"
-                  >
-                    <span>📊</span> Weekly Review
-                  </button>
-                  {!isViewingToday && (
-                    <button
-                      onClick={() => { setSelectedDate(todayStr); setShowJourneyMenu(false); }}
-                      className="w-full text-left px-4 py-2.5 text-sm text-dark hover:bg-mint transition flex items-center gap-2 cursor-pointer"
-                    >
-                      <span>📍</span> Back to Today
-                    </button>
-                  )}
-                </div>
-              )}
+          <div>
+            <div className="text-xs font-medium mb-1" style={{ color: 'var(--color-ink-muted)', fontFamily: 'var(--font-sans)' }}>
+              TODAY
             </div>
+            <div className="font-display text-4xl font-medium leading-none" style={{ color: 'var(--color-ink)' }}>
+              {completed}<span className="text-xl text-opacity-50" style={{ color: 'var(--color-ink-muted)' }}>/{total}</span>
+            </div>
+            <div className="text-sm mt-1" style={{ color: 'var(--color-ink-muted)', fontFamily: 'var(--font-sans)' }}>
+              habits complete
+            </div>
+            {topStreak > 0 && (
+              <div
+                className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full mt-2"
+                style={{ background: 'var(--color-terracotta)', color: 'white' }}
+              >
+                <svg width="10" height="10" viewBox="0 0 10 10" fill="none">
+                  <circle cx="5" cy="5" r="4" fill="white" fillOpacity={0.4} />
+                  <circle cx="5" cy="5" r="2" fill="white" />
+                </svg>
+                <span className="text-xs font-mono font-medium">{topStreak} day streak</span>
+              </div>
+            )}
           </div>
-          <div className="flex items-center gap-4 mb-3">
-            <p className="text-4xl font-bold text-forest">{percent}%</p>
-            <div className="flex gap-2">
-              {scheduledToday.slice(0, 4).map((h) => (
-                <span key={h.id} className="w-8 h-8 bg-mint rounded-full flex items-center justify-center text-sm">
-                  {h.emoji}
+        </div>
+
+        {/* 5-day selectable date strip */}
+        <div
+          data-tutorial="week-strip"
+          className="flex items-center justify-between mt-5 pt-4"
+          style={{ borderTop: '1px solid var(--color-bg-soft)' }}
+        >
+          {days5.map((iso) => {
+            const d = new Date(iso + 'T00:00:00');
+            const dayIdx = d.getDay();
+            const isToday = iso === today;
+            const isSelected = iso === selectedDate;
+            const dayRate = habits.length > 0
+              ? habits.filter(h => h.completionDates.includes(iso)).length / habits.length
+              : 0;
+
+            return (
+              <button
+                key={iso}
+                onClick={() => setSelectedDate(iso)}
+                className="flex flex-col items-center gap-1.5"
+              >
+                <span className="text-xs" style={{ color: 'var(--color-ink-muted)', fontFamily: 'var(--font-sans)' }}>
+                  {DAY_LABELS[dayIdx]}
                 </span>
-              ))}
-            </div>
-          </div>
-          <p className="text-sm text-muted mb-3">
-            {displayCompleted} of {displayTotal} Completed
-          </p>
-          <div className="w-full h-2.5 bg-cream rounded-full overflow-hidden">
-            <div
-              className="h-full rounded-full transition-all duration-500"
-              style={{ width: `${percent}%`, background: 'linear-gradient(to right, #A8C5B8, #2D4A3E)' }}
-            />
-          </div>
-        </div>
-      </section>
-
-      {/* Category Filter */}
-      {categories.length > 2 && isViewingToday && (
-        <section className="px-4 pt-4">
-          <div className="flex gap-2 overflow-x-auto pb-1 hide-scrollbar">
-            {categories.map((cat) => (
-              <button
-                key={cat}
-                onClick={() => setCategoryFilter(cat)}
-                className={`px-3 py-1.5 rounded-full text-xs font-medium whitespace-nowrap transition cursor-pointer ${
-                  categoryFilter === cat ? 'bg-forest text-white' : 'bg-mint text-forest hover:bg-sage-light'
-                }`}
-              >
-                {cat === 'all' ? 'All' : cat}
+                <div
+                  className="w-9 h-9 rounded-xl flex items-center justify-center relative transition-all"
+                  style={{
+                    background: isToday ? 'var(--color-forest)' : dayRate > 0.5 ? 'var(--color-forest)' : 'var(--color-bg-soft)',
+                    opacity: isToday ? 1 : dayRate > 0 ? 0.6 + dayRate * 0.4 : 0.4,
+                    border: isSelected && !isToday ? '2px solid var(--color-forest)' : '2px solid transparent',
+                  }}
+                >
+                  <span
+                    className="text-sm font-medium"
+                    style={{ color: (isToday || dayRate > 0.5) ? 'white' : 'var(--color-ink)', fontFamily: 'var(--font-sans)' }}
+                  >
+                    {d.getDate()}
+                  </span>
+                </div>
               </button>
-            ))}
-          </div>
-        </section>
+            );
+          })}
+        </div>
+      </div>
+
+      {/* Retroactive date banner */}
+      {selectedDate !== today && (
+        <button
+          onClick={() => setSelectedDate(today)}
+          className="w-full rounded-2xl px-4 py-3 mb-4 flex items-center justify-between animate-slide-down"
+          style={{ background: 'var(--color-butter-soft)' }}
+        >
+          <span className="text-sm font-medium" style={{ color: 'var(--color-forest)', fontFamily: 'var(--font-sans)' }}>
+            Viewing {new Date(selectedDate + 'T12:00:00').toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' })} — tap to return
+          </span>
+          <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
+            <path d="M12 7H2M6 3l-4 4 4 4" stroke="var(--color-forest)" strokeWidth={1.5} strokeLinecap="round" strokeLinejoin="round" />
+          </svg>
+        </button>
       )}
 
-      {/* Habits List */}
-      <section className="px-4 pt-4">
-        <div className="flex items-center justify-between mb-3">
-          <h2 className="text-base font-bold text-dark">
-            {isViewingToday ? "Today's Habits" : `Habits · ${selDateDisplay}`}
-          </h2>
-          <button
-            onClick={() => setShowAddModal(true)}
-            className="px-4 py-1.5 rounded-full bg-mint text-forest text-sm font-semibold hover:bg-sage-light transition cursor-pointer"
+      {/* Nudge banner (only on today) */}
+      {selectedDate === today && nudge && (
+        <div
+          className="rounded-2xl p-4 mb-4 flex items-center gap-3 animate-slide-down"
+          style={{ background: 'var(--color-butter-soft)' }}
+        >
+          <div
+            className="w-8 h-8 rounded-lg flex items-center justify-center shrink-0"
+            style={{ background: 'oklch(0.88 0.09 92)' }}
           >
-            + New
+            <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
+              <circle cx="7" cy="7" r="5.5" stroke="var(--color-forest)" strokeWidth={1.5} />
+              <path d="M7 4.5v3M7 9.5v.5" stroke="var(--color-forest)" strokeWidth={1.5} strokeLinecap="round" />
+            </svg>
+          </div>
+          <div className="flex-1 min-w-0">
+            <p className="text-sm font-medium" style={{ color: 'var(--color-forest)', fontFamily: 'var(--font-sans)' }}>
+              {incompleteHabits.length === 1 ? 'One habit left today' : `${incompleteHabits.length} habits to close the day`}
+            </p>
+            <p className="text-xs truncate mt-0.5" style={{ color: 'var(--color-forest)', opacity: 0.7, fontFamily: 'var(--font-sans)' }}>
+              {nudge}
+            </p>
+          </div>
+          <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
+            <path d="M6 3l5 5-5 5" stroke="var(--color-forest)" strokeWidth={1.5} strokeLinecap="round" strokeLinejoin="round" />
+          </svg>
+        </div>
+      )}
+
+      {/* Habit list header */}
+      <div className="flex items-center justify-between mb-3">
+        <h2 className="font-display text-xl font-medium" style={{ color: 'var(--color-ink)' }}>Habits</h2>
+        <div className="flex items-center gap-3">
+          <span className="text-sm font-mono" style={{ color: 'var(--color-ink-muted)' }}>{completed}/{total}</span>
+          <button
+            onClick={() => setShowAdd(true)}
+            className="flex items-center gap-1.5 text-sm font-medium px-3 py-1.5 rounded-xl transition-colors"
+            style={{ color: 'var(--color-forest)', background: 'var(--color-bg-soft)', fontFamily: 'var(--font-sans)' }}
+          >
+            <svg width="12" height="12" viewBox="0 0 12 12" fill="none">
+              <path d="M6 1v10M1 6h10" stroke="currentColor" strokeWidth={1.75} strokeLinecap="round" />
+            </svg>
+            New
           </button>
         </div>
+      </div>
 
-        {habits.length === 0 ? (
-          <div className="text-center py-12 bg-white rounded-2xl shadow-sm">
-            <div className="text-5xl mb-3">{greeting.emoji}</div>
-            <h3 className="text-lg font-bold text-dark mb-1">No habits yet!</h3>
-            <p className="text-muted text-sm mb-5">Start by adding your first habit to track.</p>
+      {/* Category filter chips */}
+      {categories.length > 2 && (
+        <div className="flex gap-2 overflow-x-auto pb-2 mb-3 scrollbar-none">
+          {categories.map(cat => (
             <button
-              onClick={() => setShowAddModal(true)}
-              className="bg-forest text-white font-semibold px-6 py-3 rounded-full hover:bg-forest/90 transition cursor-pointer"
+              key={cat}
+              onClick={() => setSelectedCategory(cat)}
+              className="shrink-0 px-3 py-1.5 rounded-full text-xs font-medium transition-colors"
+              style={{
+                background: selectedCategory === cat ? 'var(--color-forest)' : 'var(--color-bg-soft)',
+                color: selectedCategory === cat ? 'white' : 'var(--color-ink-muted)',
+                fontFamily: 'var(--font-sans)',
+              }}
             >
-              + Add Your First Habit
+              {cat}
+            </button>
+          ))}
+        </div>
+      )}
+
+      <div className="space-y-3">
+        {filteredHabits.map((habit, idx) => (
+          <div key={habit.id} data-tutorial={idx === 0 ? 'habit-card' : undefined}>
+            <HabitCard habit={habit} selectedDate={selectedDate} />
+          </div>
+        ))}
+        {habits.length === 0 && (
+          <div className="text-center py-16">
+            <p className="font-display text-xl mb-2" style={{ color: 'var(--color-ink-muted)' }}>No habits yet.</p>
+            <p className="text-sm mb-6" style={{ color: 'var(--color-ink-faint)', fontFamily: 'var(--font-sans)' }}>
+              Add your first habit to get started.
+            </p>
+            <button
+              onClick={() => setShowAdd(true)}
+              className="px-6 py-3 rounded-2xl text-sm font-medium text-white"
+              style={{ background: 'var(--color-forest)', fontFamily: 'var(--font-sans)' }}
+            >
+              Add habit
             </button>
           </div>
-        ) : filteredHabits.length === 0 && isViewingToday ? (
-          <div className="text-center py-8 bg-white rounded-2xl shadow-sm">
-            <div className="text-4xl mb-2">😌</div>
-            <h3 className="text-base font-bold text-dark mb-1">
-              {categoryFilter !== 'all' ? `No ${categoryFilter} habits scheduled` : 'Nothing scheduled today'}
-            </h3>
-            <p className="text-muted text-sm">Enjoy your free time or add a new habit!</p>
-          </div>
-        ) : isViewingToday ? (
-          <div className="space-y-3">
-            {filteredHabits.map((habit, index) => (
-              <div
-                key={habit.id}
-                draggable
-                onDragStart={() => handleDragStart(index)}
-                onDragOver={(e) => handleDragOver(e, index)}
-                onDragEnd={handleDragEnd}
-                className={`transition-all ${dragIndex === index ? 'opacity-50 scale-[1.02]' : ''}`}
-              >
-                <HabitCard habit={habit} />
-              </div>
-            ))}
-          </div>
-        ) : (
-          <div className="space-y-3">
-            {habitsScheduledOnDate.map((habit) => {
-              const wasCompleted = habit.completionDates.includes(selectedDate);
-              const wasSkipped = (habit.skipDates || []).includes(selectedDate);
-              return (
-                <div key={habit.id} className="bg-white rounded-2xl p-4 shadow-sm">
-                  <div className="flex items-center gap-3">
-                    <div className="w-12 h-12 bg-mint rounded-xl flex items-center justify-center text-2xl shrink-0">
-                      {habit.emoji}
-                    </div>
-                    <div className="flex-1 min-w-0">
-                      <h3 className="text-sm font-bold text-dark truncate">{habit.name}</h3>
-                      <p className="text-xs text-muted mt-0.5">
-                        {wasSkipped ? 'Rest Day' : wasCompleted ? `${habit.target || habit.category} · Done` : `${habit.target || habit.category} · Missed`}
-                      </p>
-                    </div>
-                    <div
-                      className={`w-10 h-10 rounded-full flex items-center justify-center shrink-0 ${
-                        wasSkipped ? 'bg-peach-light text-peach' : wasCompleted ? 'bg-sage text-white' : 'border-2 border-gray-200 text-gray-300'
-                      }`}
-                    >
-                      {wasSkipped ? '💤' : wasCompleted ? '✓' : '–'}
-                    </div>
-                  </div>
-                </div>
-              );
-            })}
+        )}
+        {habits.length > 0 && filteredHabits.length === 0 && (
+          <div className="text-center py-8">
+            <p className="text-sm" style={{ color: 'var(--color-ink-muted)', fontFamily: 'var(--font-sans)' }}>
+              No habits scheduled for this day.
+            </p>
           </div>
         )}
-      </section>
+      </div>
 
-      <AddHabitModal isOpen={showAddModal} onClose={() => setShowAddModal(false)} />
+      {showAdd && <AddHabitModal onClose={() => setShowAdd(false)} />}
+      {showShare && <ShareCard onClose={() => setShowShare(false)} />}
     </div>
   );
 }

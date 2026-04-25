@@ -1,35 +1,34 @@
 import { useHabits } from '../context/HabitContext';
 
 export default function UndoToast() {
-  const { undoAction, executeUndo, dismissUndo, habits } = useHabits();
+  const { undoAction, dismissUndo, executeUndo } = useHabits();
 
   if (!undoAction) return null;
 
-  const habit = undoAction.type === 'delete'
-    ? undoAction.habitData
-    : habits.find((h) => h.id === undoAction.habitId);
-
-  const message = undoAction.type === 'delete'
-    ? `"${undoAction.habitData?.name}" deleted`
-    : habit
-      ? `"${habit.name}" ${habit.isCompletedToday ? 'completed' : 'uncompleted'}`
-      : 'Action performed';
+  const label = undoAction.type === 'delete' ? 'Habit deleted' : 'Habit updated';
 
   return (
-    <div className="fixed bottom-20 left-4 right-4 z-50 flex justify-center animate-toast-in">
-      <div className="bg-dark text-white px-5 py-3 rounded-2xl shadow-xl flex items-center gap-3 max-w-sm w-full">
-        <span className="text-sm flex-1 truncate">{message}</span>
+    <div className="fixed bottom-24 lg:bottom-6 left-1/2 z-50 -translate-x-1/2 animate-toast-in">
+      <div
+        className="flex items-center gap-4 px-5 py-3 rounded-2xl shadow-xl"
+        style={{ background: 'var(--color-forest)', color: 'white', minWidth: 240 }}
+      >
+        <span className="text-sm flex-1" style={{ fontFamily: 'var(--font-sans)' }}>{label}</span>
         <button
           onClick={executeUndo}
-          className="text-peach font-bold text-sm cursor-pointer hover:text-peach-light transition whitespace-nowrap"
+          className="text-sm font-semibold transition-opacity hover:opacity-80"
+          style={{ color: 'oklch(0.88 0.09 92)', fontFamily: 'var(--font-sans)' }}
         >
           Undo
         </button>
         <button
           onClick={dismissUndo}
-          className="text-muted hover:text-white text-sm cursor-pointer transition"
+          className="opacity-60 hover:opacity-100 transition-opacity"
+          aria-label="Dismiss"
         >
-          ×
+          <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
+            <path d="M2 2l10 10M12 2L2 12" stroke="currentColor" strokeWidth={1.75} strokeLinecap="round" />
+          </svg>
         </button>
       </div>
     </div>
