@@ -5,10 +5,11 @@ type Mode = 'signin' | 'signup' | 'forgot';
 
 interface Props {
   onClose: () => void;
+  initialMode?: Mode;
 }
 
-export default function AuthModal({ onClose }: Props) {
-  const [mode, setMode] = useState<Mode>('signin');
+export default function AuthModal({ onClose, initialMode = 'signin' }: Props) {
+  const [mode, setMode] = useState<Mode>(initialMode);
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [confirm, setConfirm] = useState('');

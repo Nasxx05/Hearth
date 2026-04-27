@@ -2,7 +2,7 @@ import { useState, useRef } from 'react';
 import { useHabits } from '../context/HabitContext';
 import type { ThemeMode } from '../types/habit';
 import { useSupabaseSync } from '../hooks/useSupabaseSync';
-import { signOut, supabase } from '../lib/supabase';
+import { signOut } from '../lib/supabase';
 import AuthModal from './AuthModal';
 import { exportData, importData } from '../utils/exportImport';
 
@@ -20,6 +20,7 @@ export default function Profile() {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const importInputRef = useRef<HTMLInputElement>(null);
   const [showAuth, setShowAuth] = useState(false);
+  const [authMode, setAuthMode] = useState<'signin' | 'signup'>('signin');
   const [importMsg, setImportMsg] = useState('');
   const { userEmail, lastSynced, syncing, syncUp } = useSupabaseSync();
 
@@ -163,6 +164,67 @@ export default function Profile() {
         )}
       </div>
 
+      {/* Account */}
+      <div className="rounded-2xl mb-4 overflow-hidden" style={{ background: 'var(--color-card)' }}>
+        <div className="px-4 pt-4 pb-1">
+          <div className="text-xs font-semibold tracking-widest mb-3" style={{ color: 'var(--color-ink-muted)', fontFamily: 'var(--font-sans)' }}>ACCOUNT</div>
+        </div>
+        {userEmail ? (
+          <div className="px-4 pb-4">
+            <div className="flex items-center gap-3 mb-3">
+              <div className="w-9 h-9 rounded-full flex items-center justify-center text-sm font-semibold" style={{ background: 'var(--color-forest)', color: 'white' }}>
+                {userEmail.charAt(0).toUpperCase()}
+              </div>
+              <div className="flex-1 min-w-0">
+                <p className="text-sm font-medium truncate" style={{ color: 'var(--color-ink)', fontFamily: 'var(--font-sans)' }}>{userEmail}</p>
+                <p className="text-xs" style={{ color: 'var(--color-ink-muted)', fontFamily: 'var(--font-sans)' }}>
+                  {lastSynced ? `Last synced ${lastSynced.toLocaleTimeString()}` : 'Not synced yet'}
+                </p>
+              </div>
+            </div>
+            <div className="flex gap-2">
+              <button
+                onClick={() => syncUp(habits, profile, reflections)}
+                disabled={syncing}
+                className="flex-1 py-2.5 rounded-xl text-sm font-medium disabled:opacity-50"
+                style={{ background: 'var(--color-bg-soft)', color: 'var(--color-forest)', fontFamily: 'var(--font-sans)' }}
+              >
+                {syncing ? 'Syncing…' : 'Sync now'}
+              </button>
+              <button
+                onClick={() => signOut()}
+                className="px-4 py-2.5 rounded-xl text-sm font-medium"
+                style={{ background: 'var(--color-bg-soft)', color: 'var(--color-ink-muted)', fontFamily: 'var(--font-sans)' }}
+              >
+                Sign out
+              </button>
+            </div>
+          </div>
+        ) : (
+          <div className="px-4 pb-4">
+            <p className="text-sm mb-4" style={{ color: 'var(--color-ink-muted)', fontFamily: 'var(--font-sans)' }}>
+              Sign in to back up your data and sync across devices.
+            </p>
+            <div className="flex gap-2">
+              <button
+                onClick={() => { setShowAuth(true); }}
+                className="flex-1 py-2.5 rounded-xl text-sm font-semibold"
+                style={{ background: 'var(--color-forest)', color: 'white', fontFamily: 'var(--font-sans)' }}
+              >
+                Sign in
+              </button>
+              <button
+                onClick={() => { setShowAuth(true); setAuthMode('signup'); }}
+                className="flex-1 py-2.5 rounded-xl text-sm font-semibold"
+                style={{ background: 'var(--color-bg-soft)', color: 'var(--color-forest)', fontFamily: 'var(--font-sans)' }}
+              >
+                Create account
+              </button>
+            </div>
+          </div>
+        )}
+      </div>
+
       {/* Lifetime stats */}
       <div className="p-4 rounded-2xl mb-4" style={{ background: 'var(--color-forest)' }}>
         <div className="text-xs font-semibold tracking-widest mb-3" style={{ color: 'oklch(0.88 0.09 92)', fontFamily: 'var(--font-sans)' }}>
@@ -269,51 +331,6 @@ export default function Profile() {
         </button>
       </div>
 
-      {/* Cloud sync */}
-      {supabase && (
-        <div className="rounded-2xl overflow-hidden mt-4" style={{ background: 'var(--color-card)' }}>
-          <div className="px-4 py-4">
-            <div className="flex items-center justify-between mb-1">
-              <span className="text-sm font-medium" style={{ color: 'var(--color-ink)', fontFamily: 'var(--font-sans)' }}>Cloud sync</span>
-              {userEmail ? (
-                <button
-                  onClick={() => signOut()}
-                  className="text-xs font-medium px-3 py-1 rounded-full"
-                  style={{ background: 'var(--color-bg-soft)', color: 'var(--color-ink-muted)', fontFamily: 'var(--font-sans)' }}
-                >
-                  Sign out
-                </button>
-              ) : (
-                <button
-                  onClick={() => setShowAuth(true)}
-                  className="text-xs font-medium px-3 py-1 rounded-full"
-                  style={{ background: 'var(--color-forest)', color: 'white', fontFamily: 'var(--font-sans)' }}
-                >
-                  Sign in
-                </button>
-              )}
-            </div>
-            <p className="text-xs mb-3" style={{ color: 'var(--color-ink-muted)', fontFamily: 'var(--font-sans)' }}>
-              {userEmail ? `Signed in as ${userEmail}` : 'Not signed in — data stays local only'}
-            </p>
-            {userEmail && (
-              <button
-                onClick={() => syncUp(habits, profile, reflections)}
-                disabled={syncing}
-                className="w-full py-2 rounded-xl text-sm font-medium disabled:opacity-50"
-                style={{ background: 'var(--color-bg-soft)', color: 'var(--color-forest)', fontFamily: 'var(--font-sans)' }}
-              >
-                {syncing ? 'Syncing…' : 'Sync now'}
-              </button>
-            )}
-            {lastSynced && (
-              <p className="text-xs mt-2 text-center" style={{ color: 'var(--color-ink-faint)', fontFamily: 'var(--font-sans)' }}>
-                Last synced {lastSynced.toLocaleTimeString()}
-              </p>
-            )}
-          </div>
-        </div>
-      )}
 
       {/* Premium section */}
       <div className="rounded-2xl overflow-hidden mt-4" style={{ background: 'var(--color-card)' }}>
@@ -423,7 +440,7 @@ export default function Profile() {
         </div>
       </div>
 
-      {showAuth && <AuthModal onClose={() => setShowAuth(false)} />}
+      {showAuth && <AuthModal initialMode={authMode} onClose={() => { setShowAuth(false); setAuthMode('signin'); }} />}
     </div>
   );
 }
